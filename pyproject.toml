@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scopus-for-dobby"
+version = "1.0.0"
+description = "Stateful CLI for Scopus academic database — search, collect, and manage research papers locally."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "ybang" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "click>=8.0.0",
+    "requests>=2.28.0",
+    "prompt-toolkit>=3.0.0",
+    "duckdb>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.4.0",
+]
+export = [
+    "openpyxl>=3.1.0",
+]
+
+[project.scripts]
+scopus-for-dobby = "scopus_for_dobby.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "S",     # flake8-bandit (security)
+]
+ignore = [
+    "S603",  # subprocess call - check for execution of untrusted input
+    "S607",  # start process with partial path
+    "S608",  # SQL injection - false positive (queries built from hardcoded strings)
+    "S110",  # try-except-pass - intentional for REPL startup resilience
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/*" = ["S101"]  # allow assert in tests
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
