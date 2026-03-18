@@ -84,6 +84,7 @@ def _print_list(items: list, indent: int = 0):
 
 def handle_error(func):
     """Decorator for consistent error handling."""
+
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
@@ -94,12 +95,14 @@ def handle_error(func):
                 click.echo(f"Error: {e}", err=True)
             if not _repl_mode:
                 sys.exit(1)
+
     wrapper.__name__ = func.__name__
     wrapper.__doc__ = func.__doc__
     return wrapper
 
 
 # ── Main CLI Group ────────────────────────────────────────────────────────────
+
 
 @click.group(invoke_without_command=True)
 @click.option("--json", "use_json", is_flag=True, help="Output as JSON")
@@ -118,6 +121,7 @@ def cli(ctx, use_json):
 
 # ── Auth Commands ─────────────────────────────────────────────────────────────
 
+
 @cli.group()
 def auth():
     """Authentication and API key management."""
@@ -126,7 +130,9 @@ def auth():
 
 @auth.command("setup")
 @click.option("--api-key", required=True, help="Elsevier API key from dev.elsevier.com")
-@click.option("--inst-token", default=None, help="Institutional token (optional, for COMPLETE view)")
+@click.option(
+    "--inst-token", default=None, help="Institutional token (optional, for COMPLETE view)"
+)
 @handle_error
 def auth_setup(api_key, inst_token):
     """Configure Scopus API credentials."""
@@ -169,11 +175,13 @@ def auth_logout():
 
 # ── Search Commands ───────────────────────────────────────────────────────────
 
+
 @cli.command("search")
 @click.argument("query", nargs=-1, required=True)
 @click.option("--limit", "-n", type=int, default=25, help="Results to return (max 25 per page)")
-@click.option("--sort", "-s", default="relevancy",
-              help="Sort: relevancy, citedby-count, -pubyear, +pubyear")
+@click.option(
+    "--sort", "-s", default="relevancy", help="Sort: relevancy, citedby-count, -pubyear, +pubyear"
+)
 @click.option("--year", "-y", default=None, help="Year or range (e.g., 2024 or 2020-2024)")
 @click.option("--subject", default=None, help="Subject area code (COMP, MEDI, PHYS, etc.)")
 @click.option("--no-save", is_flag=True, help="Don't auto-save results to local DB")
@@ -198,10 +206,15 @@ def search_cmd(query, limit, sort, year, subject, no_save, tag, collection):
     session = get_session()
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     result = search_mod.search(
-        query=query_str, count=limit, sort=sort, date=year, subj=subject,
+        query=query_str,
+        count=limit,
+        sort=sort,
+        date=year,
+        subj=subject,
     )
 
     session.last_search = result
@@ -221,9 +234,11 @@ def search_cmd(query, limit, sort, year, subject, no_save, tag, collection):
         tags = list(tag) if tag else None
         db_result = db_mod.add_entries(entries, tags=tags, collection=collection)
         print()
-        skin.success(f"Auto-saved: {db_result['added']} new, "
-                     f"{db_result['updated']} updated "
-                     f"({db_result['total']} total in DB)")
+        skin.success(
+            f"Auto-saved: {db_result['added']} new, "
+            f"{db_result['updated']} updated "
+            f"({db_result['total']} total in DB)"
+        )
     else:
         print()
 
@@ -231,13 +246,13 @@ def search_cmd(query, limit, sort, year, subject, no_save, tag, collection):
 
     rate = result.get("_rate_limit", {})
     if rate and rate.get("remaining") is not None:
+        skin.update_quota(rate["remaining"])
         skin.hint(f"API quota remaining: {rate['remaining']}")
 
 
 @cli.command("search-all")
 @click.argument("query", nargs=-1, required=True)
-@click.option("--max", "max_results", type=int, default=100,
-              help="Maximum total results to fetch")
+@click.option("--max", "max_results", type=int, default=100, help="Maximum total results to fetch")
 @click.option("--sort", "-s", default="relevancy", help="Sort order")
 @click.option("--year", "-y", default=None, help="Year or range")
 @click.option("--subject", default=None, help="Subject area code")
@@ -259,14 +274,19 @@ def search_all_cmd(query, max_results, sort, year, subject, no_save, tag, collec
     session = get_session()
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     def on_progress(fetched, total):
         skin.progress(fetched, total, f"Fetched {fetched}/{total}")
 
     result = search_mod.search_all_pages(
-        query=query_str, max_results=max_results, sort=sort,
-        date=year, subj=subject, progress_callback=on_progress,
+        query=query_str,
+        max_results=max_results,
+        sort=sort,
+        date=year,
+        subj=subject,
+        progress_callback=on_progress,
     )
 
     session.last_search = result
@@ -279,16 +299,23 @@ def search_all_cmd(query, max_results, sort, year, subject, no_save, tag, collec
     print()
     skin.success(f"Fetched {result['fetched']} of {result['total_results']} total results")
 
+    rate = result.get("_rate_limit", {})
+    if rate and rate.get("remaining") is not None:
+        skin.update_quota(rate["remaining"])
+
     # Auto-save to DB (default)
     if not no_save and entries:
         tags = list(tag) if tag else None
         db_result = db_mod.add_entries(entries, tags=tags, collection=collection)
-        skin.success(f"Auto-saved: {db_result['added']} new, "
-                     f"{db_result['updated']} updated "
-                     f"({db_result['total']} total in DB)")
+        skin.success(
+            f"Auto-saved: {db_result['added']} new, "
+            f"{db_result['updated']} updated "
+            f"({db_result['total']} total in DB)"
+        )
 
 
 # ── Abstract Retrieval ────────────────────────────────────────────────────────
+
 
 @cli.command("abstract")
 @click.argument("identifier")
@@ -308,16 +335,23 @@ def abstract_cmd(identifier, view):
     session = get_session()
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     result = abstract_mod.retrieve(identifier, view)
     session.last_abstract = result
 
+    rate = result.get("_rate_limit", {})
+    if rate and rate.get("remaining") is not None:
+        skin.update_quota(rate["remaining"])
+
     skin.section("Paper Details")
     skin.status("Title", result["title"])
-    skin.status("First Author", f"{result['first_author']}"
-                + (f"  (AUID: {result['first_author_auid']})"
-                   if result.get("first_author_auid") else ""))
+    skin.status(
+        "First Author",
+        f"{result['first_author']}"
+        + (f"  (AUID: {result['first_author_auid']})" if result.get("first_author_auid") else ""),
+    )
     skin.status("Journal", result["journal"])
 
     loc_parts = []
@@ -347,7 +381,7 @@ def abstract_cmd(identifier, view):
         # Word wrap abstract
         abstract = result["abstract"]
         for i in range(0, len(abstract), 80):
-            print(f"    {abstract[i:i+80]}")
+            print(f"    {abstract[i : i + 80]}")
 
     if result.get("all_authors"):
         skin.section("All Authors")
@@ -365,6 +399,13 @@ def abstract_cmd(identifier, view):
         areas = [f"{a['name']} ({a['abbrev']})" for a in result["subject_areas"]]
         skin.status("Subject Areas", ", ".join(areas))
 
+    # Auto-save / update DB with enriched abstract data
+    db_result = db_mod.add_entries([result])
+    if db_result["updated"]:
+        skin.success("DB entry updated with enriched metadata")
+    elif db_result["added"]:
+        skin.success("Saved to DB")
+
     # Missing fields hint
     missing = []
     if not result.get("abstract"):
@@ -378,6 +419,7 @@ def abstract_cmd(identifier, view):
 
 # ── Database Commands ─────────────────────────────────────────────────────────
 
+
 @cli.group("db")
 def db():
     """Local article database management."""
@@ -385,12 +427,15 @@ def db():
 
 
 @db.command("add")
-@click.option("--from-last-search", "from_search", is_flag=True,
-              help="Add all results from last search")
-@click.option("--indices", "-i", default=None,
-              help="Comma-separated indices from last search (e.g., 1,3,5)")
-@click.option("--from-last-abstract", "from_abstract", is_flag=True,
-              help="Add last retrieved abstract")
+@click.option(
+    "--from-last-search", "from_search", is_flag=True, help="Add all results from last search"
+)
+@click.option(
+    "--indices", "-i", default=None, help="Comma-separated indices from last search (e.g., 1,3,5)"
+)
+@click.option(
+    "--from-last-abstract", "from_abstract", is_flag=True, help="Add last retrieved abstract"
+)
 @click.option("--tag", "-t", multiple=True, help="Tags to apply")
 @click.option("--collection", "-c", default=None, help="Add to collection")
 @handle_error
@@ -426,18 +471,25 @@ def db_add(from_search, indices, from_abstract, tag, collection):
     result = db_mod.add_entries(entries, tags=tags, collection=collection)
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
-    skin.success(f"Added {result['added']}, updated {result['updated']} "
-                 f"(total: {result['total']} articles in DB)")
+    skin.success(
+        f"Added {result['added']}, updated {result['updated']} "
+        f"(total: {result['total']} articles in DB)"
+    )
 
 
 @db.command("list")
 @click.option("--tag", "-t", default=None, help="Filter by tag")
 @click.option("--collection", "-c", default=None, help="Filter by collection")
 @click.option("--query", "-q", default=None, help="Text search in title/author/journal")
-@click.option("--sort", "-s", default="added",
-              type=click.Choice(["added", "cited", "date", "title"]),
-              help="Sort order")
+@click.option(
+    "--sort",
+    "-s",
+    default="added",
+    type=click.Choice(["added", "cited", "date", "title"]),
+    help="Sort order",
+)
 @click.option("--limit", "-n", type=int, default=50, help="Max results")
 @handle_error
 def db_list(tag, collection, query, sort, limit):
@@ -450,10 +502,15 @@ def db_list(tag, collection, query, sort, limit):
       scopus-for-dobby db list --query "transformer" --limit 10
     """
     result = db_mod.list_articles(
-        tag=tag, collection=collection, query=query, sort=sort, limit=limit,
+        tag=tag,
+        collection=collection,
+        query=query,
+        sort=sort,
+        limit=limit,
     )
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     articles = result["articles"]
@@ -473,13 +530,14 @@ def db_list(tag, collection, query, sort, limit):
             skin.hint(f"     Tags: {tag_str}")
 
     print()
-    skin.info(f"Showing {len(articles)} of {result['total_matching']} matching "
-              f"({result['total_in_db']} total in DB)")
+    skin.info(
+        f"Showing {len(articles)} of {result['total_matching']} matching "
+        f"({result['total_in_db']} total in DB)"
+    )
 
 
 @db.command("remove")
-@click.option("--indices", "-i", default=None,
-              help="Comma-separated indices from last list")
+@click.option("--indices", "-i", default=None, help="Comma-separated indices from last list")
 @click.option("--eid", "-e", multiple=True, help="EID(s) to remove")
 @click.option("--confirm", is_flag=True, help="Skip confirmation")
 @handle_error
@@ -509,13 +567,13 @@ def db_remove(indices, eid, confirm):
     result = db_mod.remove_entries(eids)
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
     skin.success(f"Removed {result['removed']} articles ({result['total']} remaining)")
 
 
 @db.command("tag")
-@click.option("--indices", "-i", default=None,
-              help="Comma-separated indices from last list/search")
+@click.option("--indices", "-i", default=None, help="Comma-separated indices from last list/search")
 @click.option("--eid", "-e", multiple=True, help="EID(s) to tag")
 @click.argument("tags", nargs=-1, required=True)
 @handle_error
@@ -542,6 +600,7 @@ def db_tag(indices, eid, tags):
     result = db_mod.tag_articles(eids, list(tags))
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
     skin.success(f"Tagged {result['tagged']} articles with: {', '.join(tags)}")
 
@@ -564,6 +623,7 @@ def db_untag(indices, eid, tags):
     result = db_mod.untag_articles(eids, list(tags))
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
     skin.success(f"Removed tags from {result['untagged']} articles")
 
@@ -581,6 +641,7 @@ def db_note(eid, note):
     """
     db_mod.set_note(eid, note)
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
     skin.success(f"Note saved on {eid}")
 
@@ -601,6 +662,7 @@ def db_stats():
     result = db_mod.stats()
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     skin.section("Database Stats")
@@ -624,6 +686,7 @@ def db_stats():
 
 # ── Collection Commands ───────────────────────────────────────────────────────
 
+
 @cli.group("collection")
 def collection_cmd():
     """Collection management."""
@@ -638,6 +701,7 @@ def collection_list():
     colls = result.get("collections", {})
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     if not colls:
@@ -656,6 +720,7 @@ def collection_create(name):
     """Create a new collection."""
     db_mod.create_collection(name)
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
     skin.success(f"Collection '{name}' created")
 
@@ -670,6 +735,7 @@ def collection_delete(name, confirm):
         click.confirm(f"Delete collection '{name}'?", abort=True)
     db_mod.delete_collection(name)
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
     skin.success(f"Collection '{name}' deleted")
 
@@ -701,6 +767,7 @@ def collection_add(name, indices, eid):
 
     result = db_mod.add_to_collection(name, eids)
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
     skin.success(f"Added {result['added']} to '{name}' ({result['total']} total)")
 
@@ -722,11 +789,13 @@ def collection_remove(name, indices, eid):
 
     result = db_mod.remove_from_collection(name, eids)
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
     skin.success(f"Removed {result['removed']} from '{name}' ({result['total']} remaining)")
 
 
 # ── Author Commands ───────────────────────────────────────────────────────────
+
 
 @cli.group("author")
 def author_cmd():
@@ -736,9 +805,13 @@ def author_cmd():
 
 @author_cmd.command("list")
 @click.option("--query", "-q", default=None, help="Search by author name")
-@click.option("--sort", "-s", default="papers",
-              type=click.Choice(["papers", "name", "added"]),
-              help="Sort order")
+@click.option(
+    "--sort",
+    "-s",
+    default="papers",
+    type=click.Choice(["papers", "name", "added"]),
+    help="Sort order",
+)
 @click.option("--limit", "-n", type=int, default=50, help="Max results")
 @handle_error
 def author_list(query, sort, limit):
@@ -754,6 +827,7 @@ def author_list(query, sort, limit):
     result = db_mod.list_authors(query=query, sort=sort, limit=limit)
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     authors = result["authors"]
@@ -791,6 +865,7 @@ def author_info(auid):
     result = db_mod.get_author(auid)
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     skin.section(f"Author: {result['name']}")
@@ -832,8 +907,9 @@ def author_info(auid):
             role_str = f" ({', '.join(roles)})" if roles else ""
             cited = f"Cited: {a['cited_by']}" if a.get("cited_by") else ""
             print(f"  {i}. {a['title']}")
-            print(f"     {a['journal']} ({str(a.get('cover_date', ''))[:4]}) "
-                  f"{pos}{role_str} {cited}")
+            print(
+                f"     {a['journal']} ({str(a.get('cover_date', ''))[:4]}) {pos}{role_str} {cited}"
+            )
             if a.get("doi"):
                 skin.hint(f"     DOI: {a['doi']}")
 
@@ -859,6 +935,7 @@ def author_coauthors(auid):
     result = db_mod.find_coauthors(auid)
 
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     skin.section(f"Co-authors of {result['author']['name']}")
@@ -897,6 +974,7 @@ def author_fetch(auid):
       scopus-for-dobby author fetch 26022315200
     """
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     skin.info(f"Fetching profile for {auid}...")
@@ -927,20 +1005,27 @@ def author_note(auid, note):
     """
     db_mod.set_author_note(auid, note)
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
     skin.success(f"Note saved on author {auid}")
 
 
 # ── Export Commands ───────────────────────────────────────────────────────────
 
+
 @cli.command("export")
-@click.option("--format", "fmt", type=click.Choice(["xlsx", "bibtex"]),
-              default="xlsx", help="Export format")
+@click.option(
+    "--format", "fmt", type=click.Choice(["xlsx", "bibtex"]), default="xlsx", help="Export format"
+)
 @click.option("--output", "-o", default=None, help="Output file path")
 @click.option("--tag", "-t", default=None, help="Export only articles with this tag")
 @click.option("--collection", "-c", default=None, help="Export only this collection")
-@click.option("--from-last-search", "from_search", is_flag=True,
-              help="Export last search results (not from DB)")
+@click.option(
+    "--from-last-search",
+    "from_search",
+    is_flag=True,
+    help="Export last search results (not from DB)",
+)
 @handle_error
 def export_cmd(fmt, output, tag, collection, from_search):
     """Export articles to XLSX or BibTeX.
@@ -955,6 +1040,7 @@ def export_cmd(fmt, output, tag, collection, from_search):
       scopus-for-dobby export --from-last-search --format bibtex -o refs.bib
     """
     from scopus_for_dobby.utils.repl_skin import ReplSkin
+
     skin = ReplSkin()
 
     if from_search:
@@ -993,7 +1079,153 @@ def export_cmd(fmt, output, tag, collection, from_search):
     skin.success(f"Exported {result['exported']} articles to {result['output']}")
 
 
+# ── Plugin Commands ───────────────────────────────────────────────────────────
+
+
+@cli.group("plugin")
+def plugin_cmd():
+    """Plugin integrations (e.g., Zotero)."""
+    pass
+
+
+@plugin_cmd.command("list")
+@handle_error
+def plugin_list():
+    """List available plugins and their status."""
+    from scopus_for_dobby.plugins import PLUGIN_REGISTRY
+    from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+    skin = ReplSkin()
+
+    plugins = PLUGIN_REGISTRY.list_all()
+    if not plugins:
+        skin.info("No plugins available.")
+        return
+
+    skin.section("Plugins")
+    for p in plugins:
+        st = p.status()
+        icon = "\u2713" if st["ready"] else "\u2717"
+        skin.status(f"  {icon} {p.name}", f"{p.description} — {st['message']}")
+
+
+@plugin_cmd.command("send")
+@click.argument("plugin_name")
+@click.option("--tag", "-t", default=None, help="Filter by tag")
+@click.option("--collection", "-c", default=None, help="Filter by collection")
+@click.option("--from-last-search", "from_search", is_flag=True, help="Send last search results")
+@click.option("--indices", "-i", default=None, help="Comma-separated indices from last search/list")
+@handle_error
+def plugin_send(plugin_name, tag, collection, from_search, indices):
+    """Send articles to a plugin target.
+
+    \b
+    Examples:
+      scopus-for-dobby plugin send zotero --from-last-search
+      scopus-for-dobby plugin send zotero --collection thesis-refs
+      scopus-for-dobby plugin send zotero --indices 1,3,5
+      scopus-for-dobby plugin send zotero --tag survey
+    """
+    from scopus_for_dobby.plugins import PLUGIN_REGISTRY
+    from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+    skin = ReplSkin()
+
+    plugin = PLUGIN_REGISTRY.get(plugin_name)
+    if not plugin:
+        available = ", ".join(p.name for p in PLUGIN_REGISTRY.list_all())
+        skin.error(f"Unknown plugin: {plugin_name}. Available: {available}")
+        return
+
+    # Resolve articles
+    if from_search or indices:
+        session = get_session()
+        if indices:
+            idx_list = [int(x.strip()) for x in indices.split(",") if x.strip()]
+            articles = session.get_entries_by_indices(idx_list)
+            # Normalize raw search entries
+            normalized = []
+            for e in articles:
+                try:
+                    normalized.append(db_mod._normalize_entry(e))
+                except ValueError:
+                    normalized.append(e)
+            articles = normalized
+        else:
+            entries = session.get_all_last_entries()
+            articles = []
+            for e in entries:
+                try:
+                    articles.append(db_mod._normalize_entry(e))
+                except ValueError:
+                    articles.append(e)
+    else:
+        result = db_mod.list_articles(tag=tag, collection=collection, limit=10000)
+        articles = result["articles"]
+
+    if not articles:
+        skin.error("No articles to send.")
+        return
+
+    result = plugin.send(articles)
+    skin.success(
+        f"Sent {result.get('sent', 0)} articles to {plugin_name} (via {result.get('method', '?')})"
+    )
+
+
+@plugin_cmd.group("zotero")
+def plugin_zotero():
+    """Zotero plugin configuration."""
+    pass
+
+
+@plugin_zotero.command("setup")
+@click.option("--user-id", required=True, help="Zotero user ID")
+@click.option("--api-key", required=True, help="Zotero API key from zotero.org/settings/keys")
+@handle_error
+def plugin_zotero_setup(user_id, api_key):
+    """Configure Zotero Web API credentials for offline use."""
+    from scopus_for_dobby.plugins.zotero import ZoteroPlugin
+    from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+    skin = ReplSkin()
+
+    result = ZoteroPlugin.setup(user_id, api_key)
+    skin.success(f"Zotero Web API configured (user: {result['user_id']})")
+
+
+@plugin_zotero.command("status")
+@handle_error
+def plugin_zotero_status():
+    """Check Zotero connectivity."""
+    from scopus_for_dobby.plugins import PLUGIN_REGISTRY
+    from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+    skin = ReplSkin()
+
+    plugin = PLUGIN_REGISTRY.get("zotero")
+    st = plugin.status()
+    if st["ready"]:
+        skin.success(st["message"])
+    else:
+        skin.warning(st["message"])
+
+
+@plugin_zotero.command("logout")
+@handle_error
+def plugin_zotero_logout():
+    """Remove Zotero Web API credentials."""
+    from scopus_for_dobby.plugins.zotero import ZoteroPlugin
+    from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+    skin = ReplSkin()
+
+    ZoteroPlugin.logout()
+    skin.success("Zotero credentials removed.")
+
+
 # ── REPL ──────────────────────────────────────────────────────────────────────
+
 
 @cli.command()
 @handle_error
@@ -1010,24 +1242,29 @@ def repl():
     pt_session = skin.create_prompt_session()
 
     _repl_commands = {
-        "auth":       "setup | upgrade | downgrade | status | logout",
-        "search":     "<query> [--limit N] [--sort FIELD] [--year RANGE]",
+        "auth": "setup | upgrade | downgrade | status | logout",
+        "search": "<query> [--limit N] [--sort FIELD] [--year RANGE]",
         "search-all": "<query> [--max N] — fetch multiple pages",
-        "abstract":   "<DOI|EID|ID> — get paper details",
-        "db":         "add | list | remove | tag | untag | note | info | stats",
-        "author":     "list | info | fetch | coauthors | note",
+        "abstract": "<DOI|EID|ID> — get paper details",
+        "db": "add | list | remove | tag | untag | note | info | stats",
+        "author": "list | info | fetch | coauthors | note",
         "collection": "list | create | delete | add | remove",
-        "export":     "--format xlsx|bibtex [--collection NAME]",
-        "help":       "Show this help",
-        "quit":       "Exit REPL",
+        "export": "--format xlsx|bibtex [--collection NAME]",
+        "plugin": "list | send <name> | zotero setup|status|logout",
+        "help": "Show this help",
+        "quit": "Exit REPL",
     }
 
     # Check auth on start
     try:
         status = auth_mod.get_status()
         if status.get("api_connected"):
-            skin.success(f"Connected ({status.get('tier', 'free')} tier) — "
-                         f"quota remaining: {status.get('rate_limit_remaining', '?')}")
+            remaining = status.get("rate_limit_remaining")
+            skin.update_quota(remaining)
+            skin.success(
+                f"Connected ({status.get('tier', 'free')} tier) — "
+                f"quota remaining: {remaining if remaining is not None else '?'}"
+            )
         elif status.get("configured"):
             skin.warning("API key configured but connection failed. Check your key.")
         else:
@@ -1039,8 +1276,9 @@ def repl():
     try:
         st = db_mod.stats()
         if st["total_articles"] > 0:
-            skin.info(f"Local DB: {st['total_articles']} articles, "
-                      f"{st['total_collections']} collections")
+            skin.info(
+                f"Local DB: {st['total_articles']} articles, {st['total_collections']} collections"
+            )
     except Exception:
         pass
 
@@ -1091,6 +1329,7 @@ def repl():
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
+
 
 def main():
     cli()

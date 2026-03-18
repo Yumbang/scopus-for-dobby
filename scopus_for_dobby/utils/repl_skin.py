@@ -308,10 +308,28 @@ class ReplSkin:
                 auto_suggest=AutoSuggestFromHistory(),
                 style=style,
                 enable_history_search=True,
+                bottom_toolbar=self._bottom_toolbar,
             )
             return session
         except ImportError:
             return None
+
+    # ── Quota tracking ───────────────────────────────────────────────
+
+    _last_quota: int | None = None
+
+    @classmethod
+    def update_quota(cls, remaining: int | None):
+        """Update the last known API quota remaining."""
+        if remaining is not None:
+            cls._last_quota = remaining
+
+    def _bottom_toolbar(self):
+        from prompt_toolkit.formatted_text import FormattedText
+        parts = []
+        if self._last_quota is not None:
+            parts.append(("class:bottom-toolbar", f" API quota remaining: {self._last_quota} "))
+        return FormattedText(parts)
 
     def get_input(self, pt_session, context: str = "") -> str:
         if pt_session is not None:

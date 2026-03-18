@@ -9,8 +9,8 @@ Each article is keyed by EID for deduplication. Supports:
 - Export to XLSX and BibTeX
 """
 
-import contextlib
 import json
+import unicodedata
 from datetime import datetime
 
 import duckdb
@@ -255,6 +255,10 @@ def _upsert_authors_from_entry(
     # Detect corresponding author(s)
     corresponding_names: set[str] = set()
 
+    def _strip_accents(s: str) -> str:
+        """Normalize accented characters to ASCII for comparison."""
+        return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+
     # Source 1: from raw entry's item.bibrecord.head.correspondence
     item = raw_entry.get("item", {})
     if isinstance(item, dict):
@@ -269,19 +273,19 @@ def _upsert_authors_from_entry(
                 if isinstance(person, dict):
                     cname = person.get("ce:indexed-name", "")
                     if cname:
-                        corresponding_names.add(cname.lower())
+                        corresponding_names.add(_strip_accents(cname).lower())
 
     # Source 2: from normalized entry's corresponding_authors (abstract retrieval)
     for cname in normalized.get("corresponding_authors", []):
         if cname:
-            corresponding_names.add(cname.lower())
+            corresponding_names.add(_strip_accents(cname).lower())
 
     # Upsert each author
     for author in authors_to_link:
         auid = author["auid"]
         name = author["name"]
         is_first = author["seq"] == 1
-        is_corresponding = name.lower() in corresponding_names
+        is_corresponding = _strip_accents(name).lower() in corresponding_names
 
         # Resolve affiliations for this author
         resolved_affs = [aff_map[aid] for aid in author["aff_ids"] if aid in aff_map]
@@ -305,12 +309,21 @@ def _upsert_authors_from_entry(
                 [auid, name, json.dumps(resolved_affs), _now()],
             )
 
-        # Link article <-> author
-        with contextlib.suppress(duckdb.ConstraintException):
+        # Link article <-> author (upsert to update is_corresponding on re-retrieval)
+        existing_link = conn.execute(
+            "SELECT is_corresponding FROM article_authors WHERE eid = ? AND auid = ?",
+            [eid, auid],
+        ).fetchone()
+        if existing_link is None:
             conn.execute(
                 "INSERT INTO article_authors (eid, auid, seq, is_first, is_corresponding) "
                 "VALUES (?, ?, ?, ?, ?)",
                 [eid, auid, author["seq"], is_first, is_corresponding],
+            )
+        elif is_corresponding and not existing_link[0]:
+            conn.execute(
+                "UPDATE article_authors SET is_corresponding = ? WHERE eid = ? AND auid = ?",
+                [True, eid, auid],
             )
 
 
