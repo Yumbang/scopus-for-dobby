@@ -5,13 +5,7 @@ Stateful CLI for searching, collecting, and managing academic papers from the Sc
 ## Installation
 
 ```bash
-cd scopus-for-dobby/agent-harness
-pip install -e .
-```
-
-For Excel export support:
-```bash
-pip install -e ".[export]"
+uv tool install -e ".[export]"
 ```
 
 ## Quick Start
@@ -21,13 +15,10 @@ pip install -e ".[export]"
 # 2. Configure
 scopus-for-dobby auth setup --api-key YOUR_KEY
 
-# 3. Search
+# 3. Search (results auto-save to local DB)
 scopus-for-dobby search "deep learning" --sort citedby-count
 
-# 4. Save to local DB
-scopus-for-dobby db add --from-last-search --tag ml
-
-# 5. Export
+# 4. Export
 scopus-for-dobby export --format xlsx -o papers.xlsx
 
 # Interactive mode
@@ -39,7 +30,7 @@ scopus-for-dobby
 | Group | Command | Description |
 |-------|---------|-------------|
 | `auth` | `setup` | Configure API key (and optional institutional token) |
-| `auth` | `upgrade` | Add institutional token for COMPLETE view |
+| `auth` | `upgrade` / `downgrade` | Add or remove institutional token |
 | `auth` | `status` | Check API connectivity and quota |
 | `search` | | Search papers (auto-wraps in TITLE-ABS-KEY) |
 | `search-all` | | Paginated multi-page search |
@@ -47,11 +38,15 @@ scopus-for-dobby
 | `db` | `add` | Save papers to local database |
 | `db` | `list` | List/filter/search saved articles |
 | `db` | `remove` | Remove articles from DB |
-| `db` | `tag/untag` | Manage article tags |
+| `db` | `tag` / `untag` | Manage article tags |
 | `db` | `note` | Add notes to articles |
-| `db` | `stats` | Database statistics |
-| `collection` | `create/delete` | Manage named collections |
-| `collection` | `add/remove` | Add/remove articles from collections |
+| `db` | `info` / `stats` | Article details and database statistics |
+| `author` | `list` | List authors (auto-populated from articles) |
+| `author` | `info` | Author details, articles, and co-authors |
+| `author` | `fetch` | Fetch full author profile from Scopus API |
+| `author` | `coauthors` / `note` | Co-author network and notes |
+| `collection` | `create` / `delete` | Manage named collections |
+| `collection` | `add` / `remove` | Add/remove articles from collections |
 | `export` | | Export to XLSX or BibTeX |
 
 ## Access Tiers
@@ -65,5 +60,6 @@ scopus-for-dobby
 
 All data is stored in `~/.scopus-for-dobby/`:
 - `config.json` — API credentials (chmod 600)
-- `articles.json` — Local article database
+- `articles.duckdb` — Local article database
+- `session/` — Last search/abstract results
 - `history` — REPL command history
