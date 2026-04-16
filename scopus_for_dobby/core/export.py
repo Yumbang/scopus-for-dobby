@@ -1,4 +1,4 @@
-"""Export articles to XLSX and BibTeX formats.
+"""Export articles to XLSX, BibTeX, and RIS formats.
 
 Reuses field mapping logic from the original scopus_tools.py.
 """
@@ -269,5 +269,117 @@ def export_bibtex(articles: list[dict], output_path: str) -> dict:
     return {
         "exported": len(articles),
         "format": "bibtex",
+        "output": output_path,
+    }
+
+
+# ── RIS export ───────────────────────────────────────────────────────────────
+
+RIS_TYPE_MAP = {
+    "Journal": "JOUR",
+    "Conference Proceeding": "CPAPER",
+    "Book": "BOOK",
+    "Book Series": "CHAP",
+    "Trade Journal": "JOUR",
+}
+
+
+def export_ris(articles: list[dict], output_path: str) -> dict:
+    """Export articles to RIS format (compatible with EndNote, Zotero, Mendeley).
+
+    Args:
+        articles: List of article dicts (DB format).
+        output_path: Output .ris file path.
+
+    Returns:
+        Export summary.
+    """
+    ris_entries = []
+
+    for article in articles:
+        source_type = article.get("source_type", "")
+        ty = RIS_TYPE_MAP.get(source_type, "GEN")
+
+        lines = [f"TY  - {ty}"]
+
+        # Title
+        if article.get("title"):
+            lines.append(f"TI  - {article['title']}")
+
+        # Authors — one AU line per author
+        all_authors = article.get("all_authors", [])
+        if isinstance(all_authors, list) and all_authors:
+            for a in all_authors:
+                name = a.get("name", "") if isinstance(a, dict) else str(a)
+                if name:
+                    lines.append(f"AU  - {name}")
+        elif article.get("first_author"):
+            lines.append(f"AU  - {article['first_author']}")
+
+        # Journal / source
+        if article.get("journal"):
+            tag = "JO" if ty in ("JOUR", "GEN") else "T2"
+            lines.append(f"{tag}  - {article['journal']}")
+
+        # Year and date
+        cover_date = article.get("cover_date", "")
+        if cover_date:
+            lines.append(f"PY  - {cover_date[:4]}")
+            lines.append(f"DA  - {cover_date.replace('-', '/')}")
+
+        # Volume, issue, pages
+        if article.get("volume"):
+            lines.append(f"VL  - {article['volume']}")
+        if article.get("issue"):
+            lines.append(f"IS  - {article['issue']}")
+        if article.get("pages"):
+            pages = article["pages"]
+            if "-" in pages:
+                sp, ep = pages.split("-", 1)
+                lines.append(f"SP  - {sp.strip()}")
+                lines.append(f"EP  - {ep.strip()}")
+            else:
+                lines.append(f"SP  - {pages}")
+
+        # DOI
+        if article.get("doi"):
+            lines.append(f"DO  - {article['doi']}")
+
+        # Abstract
+        if article.get("abstract"):
+            lines.append(f"AB  - {article['abstract']}")
+
+        # Keywords — one KW line per keyword
+        keywords = article.get("keywords", "")
+        if isinstance(keywords, str) and keywords:
+            for kw in keywords.split("|"):
+                kw = kw.strip()
+                if kw:
+                    lines.append(f"KW  - {kw}")
+
+        # ISSN
+        if article.get("issn"):
+            lines.append(f"SN  - {article['issn']}")
+
+        # Scopus identifiers
+        if article.get("eid"):
+            lines.append(f"AN  - {article['eid']}")
+        if article.get("scopus_id"):
+            lines.append(f"C1  - Scopus ID: {article['scopus_id']}")
+
+        # Database provider
+        lines.append("DB  - Scopus")
+
+        # End of record
+        lines.append("ER  - ")
+
+        ris_entries.append("\n".join(lines))
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(ris_entries) + "\n")
+
+    return {
+        "exported": len(articles),
+        "format": "ris",
         "output": output_path,
     }

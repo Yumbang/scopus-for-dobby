@@ -1015,7 +1015,7 @@ def author_note(auid, note):
 
 @cli.command("export")
 @click.option(
-    "--format", "fmt", type=click.Choice(["xlsx", "bibtex"]), default="xlsx", help="Export format"
+    "--format", "fmt", type=click.Choice(["xlsx", "bibtex", "ris"]), default="xlsx", help="Export format"
 )
 @click.option("--output", "-o", default=None, help="Output file path")
 @click.option("--tag", "-t", default=None, help="Export only articles with this tag")
@@ -1070,11 +1070,16 @@ def export_cmd(fmt, output, tag, collection, from_search):
         if not out.endswith(".xlsx"):
             out += ".xlsx"
         result = export_mod.export_xlsx(articles, out)
-    else:
+    elif fmt == "bibtex":
         out = output or f"scopus_export_{ts}.bib"
         if not out.endswith(".bib"):
             out += ".bib"
         result = export_mod.export_bibtex(articles, out)
+    else:
+        out = output or f"scopus_export_{ts}.ris"
+        if not out.endswith(".ris"):
+            out += ".ris"
+        result = export_mod.export_ris(articles, out)
 
     skin.success(f"Exported {result['exported']} articles to {result['output']}")
 
