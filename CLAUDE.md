@@ -8,11 +8,11 @@ Always use `uv` for Python tooling (never pip, python -m pip, or virtualenv dire
 
 ```bash
 # Install the CLI as a uv tool (makes `scopus-for-dobby` available on PATH)
-uv tool install --reinstall --editable ".[export]"
+uv tool install --reinstall --editable ".[cli,export]"
 
 # Dev environment (for running tests and linting)
 uv venv && source .venv/bin/activate
-uv pip install -e ".[dev,export]"
+uv pip install -e ".[dev]"  # [dev] bundles cli + export deps for tests
 
 # Lint and format (always use ruff, never pylint/flake8/black/isort)
 ruff check .
@@ -27,7 +27,7 @@ pytest tests/test_core.py::TestArticleDB::test_add_entries
 
 After code changes, always reinstall the CLI tool before testing:
 ```bash
-uv tool install --reinstall --editable ".[export]"
+uv tool install --reinstall --editable ".[cli,export]"
 ```
 
 ## Security
