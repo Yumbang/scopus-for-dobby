@@ -58,7 +58,11 @@ def register(cli):
     @click.option("--reload", is_flag=True, help="(dev) auto-reload on file changes")
     @click.option("--background", is_flag=True, hidden=True,
                   help="Internal: spawned by lazy-spawn; suppresses TTY banner.")
-    def serve(host: str, port: int, reload: bool, background: bool):
+    @click.option("--idle-timeout", default=0.0, type=float,
+                  help="Self-shutdown after N seconds with no requests "
+                       "(0 = run forever). Default 600 in --background mode.")
+    def serve(host: str, port: int, reload: bool, background: bool,
+              idle_timeout: float):
         """Run the HTTP daemon. CLI/GUI clients attach to it for all DB access."""
         try:
             import uvicorn
@@ -86,11 +90,15 @@ def register(cli):
         signal.signal(signal.SIGTERM, _on_exit)
         signal.signal(signal.SIGINT, _on_exit)
 
+        effective_timeout = idle_timeout
+        if background and effective_timeout == 0.0:
+            effective_timeout = 600.0  # 10-minute idle window for lazy-spawn
+
         try:
             if not background:
                 click.echo(f"scopus-for-dobby daemon → http://{host}:{port}")
             uvicorn.run(
-                build_app(),
+                build_app(idle_timeout=effective_timeout or None),
                 host=host,
                 port=port,
                 log_level="warning" if background else "info",

@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
+import time
 from typing import Any
 
 from scopus_for_dobby.core import article_db as adb
@@ -27,8 +30,15 @@ def _err(exc: Exception, status: int = 400) -> dict:
     return {"error": str(exc), "type": type(exc).__name__, "status": status}
 
 
-def build_app():
-    """Build the FastAPI app. Imported lazily so FastAPI is an optional dep."""
+def build_app(idle_timeout: float | None = None):
+    """Build the FastAPI app. Imported lazily so FastAPI is an optional dep.
+
+    ``idle_timeout`` (seconds) enables a background watchdog that sends
+    SIGTERM to the current process when no request has arrived within
+    the window. Used by the lazy-spawn daemon (``serve --background``)
+    so an idle machine doesn't carry a forgotten uvicorn process. Pass
+    ``None`` (default) for tests and the foreground ``serve`` command.
+    """
     try:
         from fastapi import Body, FastAPI, HTTPException
         from fastapi.responses import JSONResponse, StreamingResponse
@@ -38,6 +48,24 @@ def build_app():
         ) from e
 
     app = FastAPI(title="scopus-for-dobby", version="1.0.0")
+    activity = {"last": time.monotonic()}
+
+    @app.middleware("http")
+    async def _track_activity(request, call_next):
+        activity["last"] = time.monotonic()
+        return await call_next(request)
+
+    if idle_timeout and idle_timeout > 0:
+        @app.on_event("startup")
+        async def _start_idle_watchdog():
+            async def _watch():
+                check = max(5.0, idle_timeout / 4)
+                while True:
+                    await asyncio.sleep(check)
+                    if time.monotonic() - activity["last"] >= idle_timeout:
+                        os.kill(os.getpid(), signal.SIGTERM)
+                        return
+            asyncio.create_task(_watch())
 
     @app.get("/health")
     def health():
