@@ -1,0 +1,50 @@
+# xcodegen spec for the ScopusForDobby macOS app.
+# Regenerate the .xcodeproj after editing this file:
+#     cd gui-macos && xcodegen generate
+#
+# Why xcodegen: the .xcodeproj is a binary-blob plist with UUID-keyed
+# build phases that diff catastrophically. project.yml is text;
+# xcodegen rebuilds the .xcodeproj deterministically.
+
+name: ScopusForDobby
+
+options:
+  bundleIdPrefix: com.yumbang
+  deploymentTarget:
+    macOS: "13.0"
+  developmentLanguage: en
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  ScopusForDobby:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+    resources:
+      - path: Resources
+        excludes:
+          - "*.entitlements"
+    settings:
+      base:
+        PRODUCT_NAME: ScopusForDobby
+        PRODUCT_BUNDLE_IDENTIFIER: com.yumbang.scopus-for-dobby
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_NSMainStoryboardFile: ""
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        # Sandbox is OFF on purpose: the app reads ~/.scopus-for-dobby/daemon.port
+        # to discover the local HTTP daemon. Re-enable + add a security-scoped
+        # bookmark workflow if/when shipping outside the dev box.
+        CODE_SIGN_ENTITLEMENTS: Resources/ScopusForDobby.entitlements
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_PREVIEWS: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
