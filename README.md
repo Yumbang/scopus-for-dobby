@@ -48,6 +48,11 @@ scopus-for-dobby
 | `collection` | `create` / `delete` | Manage named collections |
 | `collection` | `add` / `remove` | Add/remove articles from collections |
 | `export` | | Export to XLSX or BibTeX |
+| `serve` | | Run the local HTTP daemon (for the macOS GUI / multi-process access) |
+
+### `serve` — HTTP daemon
+
+`scopus-for-dobby serve` starts a FastAPI process bound to `127.0.0.1:8765` (default) that owns the only DuckDB connection. While the daemon is running, the CLI refuses mutating subcommands so the file lock is never contended. Stop it by killing the PID at `~/.scopus-for-dobby/daemon.pid`. Install with `uv pip install -e '.[gui-support]'`. Endpoints (auto-docs at `/docs`): `/articles`, `/collections`, `/search/fts`, `/events`, `/events/stream` (SSE), `/health`, `/stats`.
 
 ## Access Tiers
 
