@@ -5,12 +5,12 @@ struct CollectionsSidebar: View {
 
     var body: some View {
         List(selection: Binding(
-            get: { state.selectedCollection },
-            set: { state.selectCollection($0) }
+            get: { state.selection },
+            set: { state.selectSidebar($0 ?? .allArticles) }
         )) {
             Section("Library") {
                 Label("All articles", systemImage: "tray.full")
-                    .tag(String?.none)
+                    .tag(SidebarSelection.allArticles)
             }
             Section("Collections") {
                 ForEach(state.collections) { c in
@@ -21,7 +21,7 @@ struct CollectionsSidebar: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    .tag(String?.some(c.name))
+                    .tag(SidebarSelection.collection(c.name))
                 }
             }
         }

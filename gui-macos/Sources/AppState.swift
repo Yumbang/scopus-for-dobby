@@ -3,14 +3,38 @@ import SwiftUI
 
 /// Single source of truth for what the views render. Owns the
 /// daemon-discovery lifecycle and the events-table polling loop.
+/// Sidebar selection. macOS ``List(selection:)`` does not play well with
+/// ``String?`` sentinels (the ``.tag(String?.none)`` row stays inert), so we
+/// encode the choice as an enum and derive the collection-name filter from it.
+enum SidebarSelection: Hashable {
+    case allArticles
+    case collection(String)
+
+    var collectionName: String? {
+        switch self {
+        case .allArticles: return nil
+        case .collection(let name): return name
+        }
+    }
+
+    var displayTitle: String {
+        switch self {
+        case .allArticles: return "All articles"
+        case .collection(let name): return name
+        }
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var daemonStatus: DaemonStatus = .unknown
     @Published var collections: [CollectionInfo] = []
     @Published var articles: [Article] = []
-    @Published var selectedCollection: String? = nil  // nil = "All"
+    @Published var selection: SidebarSelection = .allArticles
     @Published var selectedArticleEid: String? = nil
     @Published var lastError: String? = nil
+
+    var selectedCollection: String? { selection.collectionName }
 
     /// Highest event id we've already reflected in the views; used as the
     /// ``?since=`` cursor for ``GET /events``.
@@ -45,8 +69,8 @@ final class AppState: ObservableObject {
         }
     }
 
-    func selectCollection(_ name: String?) {
-        selectedCollection = name
+    func selectSidebar(_ s: SidebarSelection) {
+        selection = s
         Task { await reloadArticles() }
     }
 

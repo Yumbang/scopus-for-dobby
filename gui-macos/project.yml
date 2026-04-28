@@ -11,7 +11,7 @@ name: ScopusForDobby
 options:
   bundleIdPrefix: com.yumbang
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "14.0"
   developmentLanguage: en
   groupSortPosition: top
 

@@ -88,7 +88,20 @@ final class DaemonClient: ObservableObject {
 
     private func resolved(_ path: String) throws -> URL {
         let base = try (baseURL ?? discover())
-        return base.appendingPathComponent(path.hasPrefix("/") ? String(path.dropFirst()) : path)
+        // URLComponents is the only URL builder that correctly separates
+        // path and query without percent-encoding ``?`` (which
+        // appendingPathComponent does) or producing fragile relative URLs
+        // (which URL(string:relativeTo:) does).
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            throw DaemonError.badResponse(-1, "bad base URL \(base)")
+        }
+        let parts = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        components.path = String(parts[0])
+        components.percentEncodedQuery = parts.count > 1 ? String(parts[1]) : nil
+        guard let url = components.url else {
+            throw DaemonError.badResponse(-1, "could not build URL from \(path)")
+        }
+        return url
     }
 
     private func get<T: Decodable>(_ path: String) async throws -> T {

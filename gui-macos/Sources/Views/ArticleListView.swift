@@ -13,7 +13,7 @@ struct ArticleListView: View {
                     .tag(String?.some(a.eid))
             }
         }
-        .navigationTitle(state.selectedCollection ?? "All articles")
+        .navigationTitle(state.selection.displayTitle)
         .frame(minWidth: 360)
         .overlay {
             if state.articles.isEmpty {
