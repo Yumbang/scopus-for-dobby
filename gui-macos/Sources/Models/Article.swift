@@ -40,9 +40,13 @@ struct Article: Identifiable, Decodable, Hashable {
         case openAccess = "open_access"
         case abstract, keywords, issn
         case sourceType = "source_type"
-        case tags, notes
-        case addedAt = "added_at"
-        case updatedAt = "updated_at"
+        // Daemon emits user-metadata fields under leading-underscore names
+        // (``_tags``, ``_notes``, ``_added_at``, ``_updated_at``) to distinguish
+        // them from Scopus-imported columns. Match the wire format.
+        case tags = "_tags"
+        case notes = "_notes"
+        case addedAt = "_added_at"
+        case updatedAt = "_updated_at"
     }
 }
 
@@ -52,6 +56,12 @@ struct Author: Decodable, Hashable {
 }
 
 /// Response shape from ``GET /articles`` and ``GET /search/{fts,like}``.
+///
+/// The article list is decoded leniently: a single malformed row (e.g. a row
+/// missing ``eid`` or with an unexpected type for an optional column) must not
+/// poison the entire response. Past incidents had a single bad row crash the
+/// list and leave the GUI in a "no articles found" state with no surfaced
+/// error. We use a per-element try/catch via ``LossyArticle`` to skip bad rows.
 struct ArticleListResponse: Decodable {
     let articles: [Article]
     let totalMatching: Int?
@@ -64,4 +74,31 @@ struct ArticleListResponse: Decodable {
         case totalInDb = "total_in_db"
         case total
     }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.totalMatching = try c.decodeIfPresent(Int.self, forKey: .totalMatching)
+        self.totalInDb = try c.decodeIfPresent(Int.self, forKey: .totalInDb)
+        self.total = try c.decodeIfPresent(Int.self, forKey: .total)
+
+        var arr = try c.nestedUnkeyedContainer(forKey: .articles)
+        var out: [Article] = []
+        out.reserveCapacity(arr.count ?? 0)
+        while !arr.isAtEnd {
+            // ``LossyArticle.init`` uses ``try?`` internally so it never
+            // throws — the container always advances. Bad rows surface as
+            // ``value == nil`` and are skipped.
+            let lossy = try arr.decode(LossyArticle.self)
+            if let a = lossy.value { out.append(a) }
+        }
+        self.articles = out
+    }
 }
+
+private struct LossyArticle: Decodable {
+    let value: Article?
+    init(from decoder: Decoder) throws {
+        self.value = try? Article(from: decoder)
+    }
+}
+

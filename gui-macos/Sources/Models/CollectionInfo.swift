@@ -20,7 +20,18 @@ struct CollectionsResponse: Decodable {
 
         enum CodingKeys: String, CodingKey {
             case articleCount = "article_count"
-            case createdAt = "created_at"
+            // Server emits ``created`` (not ``created_at``); accept either so a
+            // future schema rename doesn't blank the sidebar silently.
+            case createdAt = "created"
+            case createdAtAlt = "created_at"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.articleCount = try c.decodeIfPresent(Int.self, forKey: .articleCount)
+            let primary = try c.decodeIfPresent(String.self, forKey: .createdAt)
+            let alt = try c.decodeIfPresent(String.self, forKey: .createdAtAlt)
+            self.createdAt = primary ?? alt
         }
     }
 
