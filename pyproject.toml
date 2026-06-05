@@ -19,6 +19,11 @@ classifiers = [
 dependencies = [
     "requests>=2.28.0",
     "duckdb>=1.0.0",
+    # ADR-7: CLI is a pure HTTP client that lazy-spawns the daemon. Every
+    # invocation needs both ends of the protocol, so these are core, not optional.
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -26,13 +31,9 @@ cli = [
     "click>=8.0.0",
     "prompt-toolkit>=3.0.0",
 ]
-gui-support = [
-    # HTTP daemon (Plan C) — Swift GUI and CLI clients attach via 127.0.0.1.
-    # See spikes/duckdb_mvcc/REPORT.md for why direct cross-process reads were rejected.
-    "fastapi>=0.110.0",
-    "uvicorn>=0.27.0",
-    "httpx>=0.27.0",
-]
+# Kept for backwards-compatibility with any tooling that still references it.
+# All daemon deps are now in core `dependencies` per ADR-7.
+gui-support = []
 export = [
     "openpyxl>=3.1.0",
 ]
