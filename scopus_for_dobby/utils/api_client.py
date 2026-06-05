@@ -7,10 +7,13 @@ Base URL: https://api.elsevier.com
 """
 
 import json
+import logging
 import time
 from pathlib import Path
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path.home() / ".scopus-for-dobby"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -19,10 +22,10 @@ BASE_URL = "https://api.elsevier.com"
 
 # Per-endpoint throttle intervals (seconds between requests)
 _THROTTLE = {
-    "/content/search/scopus": 0.12,       # 9 req/sec
-    "/content/abstract": 0.12,            # 9 req/sec
-    "/content/author/author_id": 0.35,    # 3 req/sec
-    "/content/search/author": 0.55,       # 2 req/sec
+    "/content/search/scopus": 0.12,  # 9 req/sec
+    "/content/abstract": 0.12,  # 9 req/sec
+    "/content/author/author_id": 0.35,  # 3 req/sec
+    "/content/search/author": 0.55,  # 2 req/sec
     "/content/abstract/citations": 0.12,  # ~9 req/sec
 }
 
@@ -30,6 +33,7 @@ _last_call: dict[str, float] = {}
 
 
 # ── Config I/O ────────────────────────────────────────────────────────────────
+
 
 def _ensure_config_dir():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -49,7 +53,32 @@ def save_config(config: dict):
     CONFIG_FILE.chmod(0o600)
 
 
+def _cache_quota(remaining: int, reset: str | None):
+    """Cache the latest rate-limit headers to config so other commands can
+    report quota without making an API call. Best-effort: failures are ignored.
+    """
+    try:
+        config = load_config()
+        config["last_quota"] = {
+            "remaining": remaining,
+            "reset": reset,
+            "updated_at": int(time.time()),
+        }
+        save_config(config)
+    except OSError as e:
+        logger.debug("Failed to cache quota: %s", e)
+
+
+def get_cached_quota() -> dict | None:
+    """Return the last cached rate-limit info, or None if never recorded.
+
+    Reads only from local config — makes no API call.
+    """
+    return load_config().get("last_quota")
+
+
 # ── Rate limiter ──────────────────────────────────────────────────────────────
+
 
 def _throttle(endpoint: str):
     """Sleep if needed to respect per-endpoint rate limits."""
@@ -64,6 +93,7 @@ def _throttle(endpoint: str):
 
 
 # ── Core request ──────────────────────────────────────────────────────────────
+
 
 def _build_headers(config: dict) -> dict:
     """Build auth headers from config."""
@@ -85,8 +115,7 @@ def _build_headers(config: dict) -> dict:
     return headers
 
 
-def api_get(endpoint: str, params: dict | None = None,
-            config: dict | None = None) -> dict:
+def api_get(endpoint: str, params: dict | None = None, config: dict | None = None) -> dict:
     """Make a GET request to the Scopus API.
 
     Args:
@@ -117,17 +146,14 @@ def api_get(endpoint: str, params: dict | None = None,
         reset_msg = ""
         if reset:
             try:
-                reset_time = time.strftime("%Y-%m-%d %H:%M UTC",
-                                           time.gmtime(int(reset)))
+                reset_time = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(int(reset)))
                 reset_msg = f" Quota resets at {reset_time}."
             except (ValueError, OSError):
                 pass
         raise RuntimeError(f"Rate limit exceeded.{reset_msg}")
 
     if resp.status_code == 401:
-        raise RuntimeError(
-            "Authentication failed (HTTP 401). Check your API key."
-        )
+        raise RuntimeError("Authentication failed (HTTP 401). Check your API key.")
 
     if resp.status_code == 403:
         raise RuntimeError(
@@ -136,8 +162,16 @@ def api_get(endpoint: str, params: dict | None = None,
         )
 
     if resp.status_code != 200:
+        # Log the raw body for diagnostics only — never surface it to callers,
+        # since upstream response bodies may carry sensitive or noisy content.
+        logger.debug(
+            "Scopus API error: HTTP %s on %s — body: %s",
+            resp.status_code,
+            endpoint,
+            resp.text[:200],
+        )
         raise RuntimeError(
-            f"API error: HTTP {resp.status_code} — {resp.text[:200]}"
+            f"API error: HTTP {resp.status_code} on {endpoint} ({resp.reason or 'request failed'})."
         )
 
     result = resp.json()
@@ -148,12 +182,14 @@ def api_get(endpoint: str, params: dict | None = None,
             "remaining": int(remaining),
             "reset": reset,
         }
+        _cache_quota(int(remaining), reset)
 
     return result
 
 
-def api_get_raw(endpoint: str, params: dict | None = None,
-                config: dict | None = None) -> requests.Response:
+def api_get_raw(
+    endpoint: str, params: dict | None = None, config: dict | None = None
+) -> requests.Response:
     """Make a GET request and return the raw response (for header inspection)."""
     if config is None:
         config = load_config()
