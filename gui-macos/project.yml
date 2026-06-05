@@ -52,3 +52,18 @@ targets:
         ENABLE_HARDENED_RUNTIME: NO
         ENABLE_PREVIEWS: YES
         SWIFT_EMIT_LOC_STRINGS: YES
+
+  # Unit tests. Host-less (no TEST_HOST/BUNDLE_LOADER) so they run without
+  # launching the app — every test here decodes JSON or exercises pure logic
+  # via `@testable import ScopusForDobby` and needs no UI bootstrap or daemon.
+  ScopusForDobbyTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: ScopusForDobby
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yumbang.scopus-for-dobby.tests
+        GENERATE_INFOPLIST_FILE: YES
