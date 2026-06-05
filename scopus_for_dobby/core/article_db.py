@@ -11,6 +11,8 @@ Each article is keyed by EID for deduplication. Supports:
 
 import contextlib
 import json
+import logging
+import threading
 import unicodedata
 from contextlib import contextmanager
 from datetime import datetime
@@ -21,6 +23,12 @@ import duckdb
 from scopus_for_dobby.utils.api_client import CONFIG_DIR
 
 DB_PATH = CONFIG_DIR / "articles.duckdb"
+
+# Current on-disk schema version. Bump and add a migration gate in
+# ``_ensure_schema`` whenever the DDL changes incompatibly.
+SCHEMA_VERSION = 1
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -39,11 +47,46 @@ _schema_initialized: set[Path] = set()
 _fts_loaded: set[Path] = set()
 _fts_available: dict[Path, bool] = {}
 
+# DuckDB's Python bindings are NOT thread-safe even with the documented
+# ``cursor()`` pattern: cursors share their parent connection's underlying
+# state, so concurrent ``execute()``/``fetchone()`` calls from FastAPI's
+# threadpool can still produce torn results — manifesting most often as
+# ``fetchone() is None`` on a query that should always return one row.
+#
+# Pattern that actually works: one parent ``duckdb.connect()`` PER THREAD,
+# stored in ``threading.local()``. DuckDB supports multiple parents over the
+# same file from the same process, so each request thread gets its own
+# isolated connection without a global lock around every query.
+#
+# ``_conn_cache`` is preserved for tests that monkeypatch ``DB_PATH`` and
+# call ``close_cached_connections()`` to clean up; we now also track
+# per-thread parents in ``_thread_local.conns`` and close them too.
+_conn_lock = threading.RLock()
+_thread_local = threading.local()
+
+# Process-wide write serialization. Per-thread connections solved the cursor-
+# race that caused ``fetchone() is None``, but they still hit DuckDB's MVCC
+# write-write detection: two threads UPDATE-ing the same row in overlapping
+# transactions both get ``TransactionException: Conflict on update!`` and one
+# (or both) is rolled back. For a single-user GUI the realistic write rate is
+# tiny — events polls are reads, the user mutates one row at a time — so
+# serializing every ``_txn`` block costs nothing in practice and eliminates
+# the conflict class entirely. Reads remain parallel (no lock).
+_write_lock = threading.Lock()
+
 
 def _open_conn(read_only: bool = False) -> duckdb.DuckDBPyConnection:
     """Open a fresh DuckDB connection with no DDL side-effects."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    return duckdb.connect(str(DB_PATH), read_only=read_only)
+    conn = duckdb.connect(str(DB_PATH), read_only=read_only)
+    # The DB file holds the user's article corpus; mirror the 0600 lock-down
+    # applied to config.json (api_client.save_config) so it isn't world-
+    # readable under the default umask. The file may already exist from a
+    # prior run; chmod is idempotent. Tolerate a missing file (e.g. an
+    # in-memory or not-yet-flushed connection) rather than failing the open.
+    with contextlib.suppress(FileNotFoundError):
+        Path(DB_PATH).chmod(0o600)
+    return conn
 
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
@@ -132,6 +175,17 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             payload     JSON
         )
     """)
+    # ── Schema versioning gate ───────────────────────────────────────────────
+    # Single-row meta table recording the on-disk schema version. No migration
+    # framework — just a gate future migrations can branch on. A fresh DB is
+    # stamped with SCHEMA_VERSION; existing DBs keep whatever version they hold.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_meta (
+            version INTEGER NOT NULL
+        )
+    """)
+    if conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 0:
+        conn.execute("INSERT INTO schema_meta (version) VALUES (?)", [SCHEMA_VERSION])
     _schema_initialized.add(path)
 
 
@@ -151,42 +205,90 @@ def _emit_event(
 
 
 def _get_conn() -> duckdb.DuckDBPyConnection:
-    """Return the process-local cached read/write connection.
+    """Return the calling thread's parent DuckDB connection for ``DB_PATH``.
 
-    Schema is initialized once per process per DB_PATH. Callers must NOT
-    close the returned connection — it is reused across mutations.
+    The connection is opened on first call per (thread, DB_PATH) and reused
+    afterwards. DuckDB allows many parent connections to the same file from
+    one process, so this gives full thread isolation without a global lock
+    around every query.
+
+    Schema initialization is global (runs at most once per process per
+    DB_PATH), guarded by ``_conn_lock`` so concurrent first-callers don't
+    race the DDL.
     """
     path = Path(DB_PATH)
-    conn = _conn_cache.get(path)
+    # Per-thread connection cache. ``getattr`` + ``hasattr`` separately so we
+    # don't ``or {}`` an empty-but-existing dict (left behind after a test
+    # cleanup), which would silently detach future stores from
+    # ``_thread_local`` and re-open a fresh connection per call.
+    if not hasattr(_thread_local, "conns"):
+        _thread_local.conns = {}
+    conns: dict[Path, duckdb.DuckDBPyConnection] = _thread_local.conns
+    conn = conns.get(path)
     if conn is None:
         conn = _open_conn(read_only=False)
-        _conn_cache[path] = conn
-    _ensure_schema(conn)
+        conns[path] = conn
+        # Track the first connection ever opened against this path so tests
+        # / cleanup can close it; subsequent threads' connections are tracked
+        # in ``_all_thread_conns`` for global teardown.
+        with _conn_lock:
+            _conn_cache.setdefault(path, conn)
+            _all_thread_conns.append(conn)
+    with _conn_lock:
+        _ensure_schema(conn)
     return conn
+
+
+# Tracks every per-thread connection ever opened so
+# ``close_cached_connections()`` can fully shut down the process's DuckDB
+# resources (used by tests to release file locks).
+_all_thread_conns: list[duckdb.DuckDBPyConnection] = []
 
 
 @contextmanager
 def _txn(conn: duckdb.DuckDBPyConnection):
-    """Wrap a block of mutations in BEGIN/COMMIT, rolling back on exception."""
-    conn.execute("BEGIN TRANSACTION")
-    try:
-        yield conn
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    else:
-        conn.execute("COMMIT")
+    """Wrap a block of mutations in BEGIN/COMMIT, rolling back on exception.
+
+    Acquires ``_write_lock`` for the entire span so DuckDB's MVCC never sees
+    two concurrent writers on the same row (which would raise
+    ``TransactionException: Conflict on update!``). For a single-user app
+    this serialization is free; reads continue to run in parallel because
+    they don't go through ``_txn``.
+    """
+    with _write_lock:
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            yield conn
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        else:
+            conn.execute("COMMIT")
 
 
 def close_cached_connections() -> None:
-    """Close all cached connections. Intended for tests/teardown."""
-    for c in _conn_cache.values():
-        with contextlib.suppress(Exception):
-            c.close()
-    _conn_cache.clear()
-    _schema_initialized.clear()
-    _fts_loaded.clear()
-    _fts_available.clear()
+    """Close all cached connections. Intended for tests/teardown.
+
+    Closes every per-thread parent connection tracked in
+    ``_all_thread_conns`` plus any legacy entries still in ``_conn_cache``.
+    Resets the calling thread's local cache so the next ``_get_conn()``
+    opens a fresh connection (important for test isolation when DB_PATH is
+    monkeypatched).
+    """
+    with _conn_lock:
+        for c in list(_all_thread_conns):
+            with contextlib.suppress(Exception):
+                c.close()
+        _all_thread_conns.clear()
+        for c in _conn_cache.values():
+            with contextlib.suppress(Exception):
+                c.close()
+        _conn_cache.clear()
+        _schema_initialized.clear()
+        _fts_loaded.clear()
+        _fts_available.clear()
+    if hasattr(_thread_local, "conns"):
+        _thread_local.conns.clear()
 
 
 def _ensure_fts(conn: duckdb.DuckDBPyConnection) -> bool:
@@ -202,8 +304,9 @@ def _ensure_fts(conn: duckdb.DuckDBPyConnection) -> bool:
         conn.execute("INSTALL fts")
         conn.execute("LOAD fts")
         _fts_available[path] = True
-    except Exception:
+    except Exception as exc:
         _fts_available[path] = False
+        logger.warning("DuckDB fts extension unavailable; search falls back to LIKE: %s", exc)
     _fts_loaded.add(path)
     return _fts_available[path]
 
@@ -217,13 +320,17 @@ def rebuild_fts() -> dict:
     conn = _get_conn()
     if not _ensure_fts(conn):
         return {"rebuilt": False, "reason": "fts_unavailable"}
-    n = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-    if n == 0:
-        return {"rebuilt": False, "reason": "empty_corpus"}
-    conn.execute(
-        "PRAGMA create_fts_index('articles', 'eid', 'title', 'abstract', "
-        "'keywords', overwrite=1)"
-    )
+    # Hold the process-wide write lock for the whole count+rebuild so a
+    # search-triggered rebuild can't race a concurrent add_entries and miss
+    # rows it just committed (the PRAGMA snapshots the table as it runs).
+    with _write_lock:
+        n = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+        if n == 0:
+            return {"rebuilt": False, "reason": "empty_corpus"}
+        conn.execute(
+            "PRAGMA create_fts_index('articles', 'eid', 'title', 'abstract', "
+            "'keywords', overwrite=1)"
+        )
     return {"rebuilt": True, "rows": n}
 
 
@@ -578,8 +685,10 @@ def add_entries(entries: list[dict], tags: list[str] | None = None,
 
     total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
     if not defer_fts_rebuild and (added or updated):
-        with contextlib.suppress(Exception):
+        try:
             rebuild_fts()
+        except Exception as exc:
+            logger.warning("FTS index rebuild failed; search may be stale: %s", exc)
     return {"added": added, "updated": updated, "total": total}
 
 
@@ -689,8 +798,10 @@ def search_articles_fts(query: str, limit: int = 50) -> dict:
     if conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 0:
         return {"articles": [], "total": 0}
     # Ensure index exists; cheap rebuild on empty/missing.
-    with contextlib.suppress(Exception):
+    try:
         rebuild_fts()
+    except Exception as exc:
+        logger.warning("FTS index rebuild failed; search may be stale: %s", exc)
 
     sql = (
         "SELECT *, fts_main_articles.match_bm25(eid, ?) AS _score "

@@ -63,16 +63,56 @@ class TestConnectionLifecycle:
         db_mod._ensure_schema(conn)
         assert db_mod._schema_initialized == before
 
-    def test_get_conn_returns_cached(self, tmp_db):
+    def test_get_conn_returns_thread_local_parent(self, tmp_db):
+        # Post thread-safety fix v2: ``_get_conn()`` returns the calling
+        # thread's parent connection (not a cursor). Cursor-isolation alone
+        # was insufficient — DuckDB's underlying connection state still raced
+        # under FastAPI threadpool dispatch. Same-thread calls return the
+        # same object now; concurrent threads each get their own parent
+        # (verified by ``test_concurrent_threads_dont_corrupt_cursors``).
         c1 = db_mod._get_conn()
         c2 = db_mod._get_conn()
-        assert c1 is c2, "_get_conn must return the cached connection"
+        assert c1 is c2, "same-thread _get_conn() must return the same connection"
+        # The first parent ever opened against this path is recorded in
+        # ``_conn_cache`` for legacy/test cleanup hooks.
+        assert db_mod.DB_PATH in db_mod._conn_cache
 
     def test_connect_storm(self, tmp_db):
         """50 rapid _get_conn() calls must not trigger lock errors."""
         for _ in range(50):
             conn = db_mod._get_conn()
             conn.execute("SELECT 1").fetchone()
+
+    def test_concurrent_threads_dont_corrupt_cursors(self, tmp_db):
+        """Regression: two threads issuing list_articles() simultaneously
+        must not see ``fetchone() is None`` from interleaved cursors. This
+        was the 500 hit by the GUI's concurrent reloadAll/poll loop —
+        ``conn.execute('SELECT COUNT(*) FROM articles').fetchone()[0]``
+        crashed because the underlying result cursor had been consumed by
+        another thread. Fix: ``_get_conn()`` returns a fresh ``cursor()``
+        per call.
+        """
+        import threading as _t
+
+        # Seed a row so the table exists with deterministic content.
+        db_mod.add_entries([{"eid": "EID-CONCURRENT-1", "title": "x"}])
+
+        errors: list[Exception] = []
+
+        def hammer() -> None:
+            try:
+                for _ in range(40):
+                    db_mod.list_articles(limit=10)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [_t.Thread(target=hammer) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"concurrent list_articles raised: {errors[:3]}"
 
     def test_txn_commits_on_success(self, tmp_db):
         conn = db_mod._get_conn()
