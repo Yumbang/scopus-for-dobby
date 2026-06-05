@@ -63,8 +63,6 @@ def db_add(from_search, indices, from_abstract, tag, collection):
     elif indices:
         idx_list = [int(x.strip()) for x in indices.split(",") if x.strip()]
         entries = session.get_entries_by_indices(idx_list)
-    elif from_search:
-        entries = session.get_all_last_entries()
     else:
         entries = session.get_all_last_entries()
 
@@ -72,12 +70,17 @@ def db_add(from_search, indices, from_abstract, tag, collection):
         click.echo("No entries to add. Run a search first.", err=True)
         return
 
-    tags = list(tag) if tag else None
-    result = db_mod.add_entries(entries, tags=tags, collection=collection)
-
     from scopus_for_dobby.utils.repl_skin import ReplSkin
 
     skin = ReplSkin()
+
+    if collection is None and session.working_collection:
+        collection = session.working_collection
+        skin.info(f"Using working collection '{collection}'")
+
+    tags = list(tag) if tag else None
+    result = db_mod.add_entries(entries, tags=tags, collection=collection)
+
     skin.success(
         f"Added {result['added']}, updated {result['updated']} "
         f"(total: {result['total']} articles in DB)"

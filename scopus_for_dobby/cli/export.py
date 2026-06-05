@@ -58,6 +58,11 @@ def export_cmd(fmt, output, tag, collection, from_search):
             except ValueError:
                 articles.append(e)
     else:
+        if collection is None:
+            session = get_session()
+            if session.working_collection:
+                collection = session.working_collection
+                skin.info(f"Using working collection '{collection}'")
         result = db_mod.list_articles(tag=tag, collection=collection, limit=10000)
         articles = result["articles"]
 

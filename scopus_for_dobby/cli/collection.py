@@ -70,6 +70,82 @@ def collection_delete(name, confirm):
     skin.success(f"Collection '{name}' deleted")
 
 
+@collection_cmd.command("set")
+@click.argument("name", required=False)
+@click.option("--clear", is_flag=True, help="Clear the working collection")
+@handle_error
+def collection_set(name, clear):
+    """Set (or --clear) the working collection used as the default for db add/export.
+
+    \b
+    Examples:
+      scopus-for-dobby collection set thesis-refs
+      scopus-for-dobby collection set --clear
+    """
+    session = get_session()
+
+    if clear:
+        session.working_collection = None
+        result = {"working_collection": None, "cleared": True}
+        if state.json_output:
+            output(result)
+            return
+        from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+        ReplSkin().success("Working collection cleared")
+        return
+
+    if not name:
+        raise click.UsageError("Provide a collection NAME or use --clear.")
+
+    colls = db_mod.list_collections().get("collections", {})
+    if name not in colls:
+        raise click.ClickException(
+            f"Collection '{name}' does not exist. Create it with: collection create {name}"
+        )
+
+    session.working_collection = name
+    result = {"working_collection": name}
+    if state.json_output:
+        output(result)
+        return
+    from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+    ReplSkin().success(f"Working collection set to '{name}'")
+
+
+@collection_cmd.command("unset")
+@handle_error
+def collection_unset():
+    """Clear the working collection."""
+    session = get_session()
+    session.working_collection = None
+    if state.json_output:
+        output({"working_collection": None, "cleared": True})
+        return
+    from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+    ReplSkin().success("Working collection cleared")
+
+
+@collection_cmd.command("current")
+@handle_error
+def collection_current():
+    """Print the current working collection."""
+    session = get_session()
+    name = session.working_collection
+    if state.json_output:
+        output({"working_collection": name})
+        return
+    from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+    skin = ReplSkin()
+    if name:
+        skin.info(f"Working collection: '{name}'")
+    else:
+        skin.info("No working collection set.")
+
+
 @collection_cmd.command("merge")
 @click.argument("src")
 @click.argument("dst")
@@ -92,8 +168,7 @@ def collection_merge(src, dst):
         skin.info(f"src == dst ('{src}'); no-op.")
         return
     skin.success(
-        f"Merged '{result['merged_from']}' → '{result['merged_to']}' "
-        f"({result['moved']} moved)"
+        f"Merged '{result['merged_from']}' → '{result['merged_to']}' ({result['moved']} moved)"
     )
 
 

@@ -24,13 +24,13 @@ def repl():
     pt_session = skin.create_prompt_session()
 
     _repl_commands = {
-        "auth": "setup | upgrade | downgrade | status | logout",
+        "auth": "setup | upgrade | downgrade | status | quota | logout",
         "search": "<query> [--limit N] [--sort FIELD] [--year RANGE]",
         "search-all": "<query> [--max N] — fetch multiple pages",
         "abstract": "<DOI|EID|ID> — get paper details",
         "db": "add | list | remove | tag | untag | note | info | stats",
         "author": "list | info | fetch | coauthors | note",
-        "collection": "list | create | delete | add | remove",
+        "collection": "list | create | delete | add | remove | set | unset | current",
         "export": "--format xlsx|bibtex|ris [--collection NAME]",
         "help": "Show this help",
         "quit": "Exit REPL",
