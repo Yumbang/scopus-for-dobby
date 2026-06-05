@@ -18,12 +18,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 import signal
 import time
 from typing import Any
 
 from scopus_for_dobby.core import article_db as adb
+
+logger = logging.getLogger(__name__)
 
 
 def _err(exc: Exception, status: int = 400) -> dict:
@@ -48,23 +52,39 @@ def build_app(idle_timeout: float | None = None):
         ) from e
 
     app = FastAPI(title="scopus-for-dobby", version="1.0.0")
-    activity = {"last": time.monotonic()}
+    # ``last`` is the monotonic timestamp of the most recent activity;
+    # ``streams`` counts currently-connected SSE clients. The watchdog
+    # only kills the daemon when both are idle (no recent request AND no
+    # live stream), so a long-lived /events/stream keeps us alive.
+    activity = {"last": time.monotonic(), "streams": 0}
+
+    def _touch() -> None:
+        activity["last"] = time.monotonic()
 
     @app.middleware("http")
     async def _track_activity(request, call_next):
-        activity["last"] = time.monotonic()
-        return await call_next(request)
+        _touch()
+        try:
+            return await call_next(request)
+        finally:
+            # Refresh on completion too, so requests that outlive the
+            # idle window (e.g. a closing SSE stream) don't go stale.
+            _touch()
 
     if idle_timeout and idle_timeout > 0:
+
         @app.on_event("startup")
         async def _start_idle_watchdog():
             async def _watch():
                 check = max(5.0, idle_timeout / 4)
                 while True:
                     await asyncio.sleep(check)
+                    if activity["streams"] > 0:
+                        continue
                     if time.monotonic() - activity["last"] >= idle_timeout:
                         os.kill(os.getpid(), signal.SIGTERM)
                         return
+
             asyncio.create_task(_watch())
 
     @app.get("/health")
@@ -165,8 +185,8 @@ def build_app(idle_timeout: float | None = None):
 
     # ── Authors ──────────────────────────────────────────────────────────────
     @app.get("/authors")
-    def list_authors(sort: str = "citation", limit: int = 50):
-        return adb.list_authors(sort=sort, limit=limit)
+    def list_authors(query: str | None = None, sort: str = "papers", limit: int = 50):
+        return adb.list_authors(query=query, sort=sort, limit=limit)
 
     @app.get("/authors/{auid}")
     def get_author(auid: str):
@@ -185,7 +205,17 @@ def build_app(idle_timeout: float | None = None):
         try:
             return adb.fetch_author_profile(auid)
         except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e)) from e
+            # Don't leak upstream Scopus response bodies to the client.
+            # Log the full error server-side; return a sanitized detail,
+            # surfacing only an HTTP status code if we can extract one.
+            logger.exception("Author fetch failed for %s", auid)
+            m = re.search(r"HTTP (\d+)", str(e))
+            detail = (
+                f"Scopus API request failed (status {m.group(1)})"
+                if m
+                else "Scopus API request failed"
+            )
+            raise HTTPException(status_code=502, detail=detail) from e
 
     # ── Stats / FTS ──────────────────────────────────────────────────────────
     @app.get("/stats")
@@ -224,30 +254,58 @@ def build_app(idle_timeout: float | None = None):
     async def stream_events(since: int = 0):
         async def gen():
             cursor = since
-            yield "retry: 2000\n\n"
-            while True:
-                conn = adb._get_conn()
-                rows = conn.execute(
-                    "SELECT id, kind, entity_type, entity_id, payload "
-                    "FROM events WHERE id > ? ORDER BY id ASC LIMIT 200",
-                    [cursor],
-                ).fetchall()
-                for r in rows:
-                    cursor = r[0]
-                    payload: dict[str, Any] = {
-                        "id": r[0],
-                        "kind": r[1],
-                        "entity_type": r[2],
-                        "entity_id": r[3],
-                        "payload": json.loads(r[4]) if r[4] else {},
-                    }
-                    yield f"id: {r[0]}\ndata: {json.dumps(payload)}\n\n"
-                await asyncio.sleep(0.5)
+            activity["streams"] += 1
+            try:
+                yield "retry: 2000\n\n"
+                while True:
+                    # Keep the daemon alive while a client is connected: a
+                    # streaming response otherwise never re-enters the
+                    # middleware, so the watchdog would see us as idle.
+                    _touch()
+                    conn = adb._get_conn()
+                    rows = conn.execute(
+                        "SELECT id, kind, entity_type, entity_id, payload "
+                        "FROM events WHERE id > ? ORDER BY id ASC LIMIT 200",
+                        [cursor],
+                    ).fetchall()
+                    for r in rows:
+                        cursor = r[0]
+                        try:
+                            data = json.loads(r[4]) if r[4] else {}
+                        except (ValueError, TypeError):
+                            # One corrupted payload row must not kill the
+                            # stream; skip it and keep going.
+                            logger.warning("Skipping event %s with unparseable payload", r[0])
+                            continue
+                        payload: dict[str, Any] = {
+                            "id": r[0],
+                            "kind": r[1],
+                            "entity_type": r[2],
+                            "entity_id": r[3],
+                            "payload": data,
+                        }
+                        yield f"id: {r[0]}\ndata: {json.dumps(payload)}\n\n"
+                    # Periodic comment doubles as an SSE keepalive and lets
+                    # the client notice a dropped connection promptly.
+                    yield ": keepalive\n\n"
+                    await asyncio.sleep(0.5)
+            finally:
+                activity["streams"] -= 1
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     @app.exception_handler(ValueError)
     async def value_error_handler(request, exc):
         return JSONResponse(status_code=400, content=_err(exc, 400))
+
+    @app.exception_handler(Exception)
+    async def unhandled_error_handler(request, exc):
+        # Catch-all: log the full traceback server-side but never leak
+        # internal details (messages, stack frames) to the client.
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal server error", "status": 500},
+        )
 
     return app

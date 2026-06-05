@@ -120,8 +120,8 @@ def rename_collection(old: str, new: str):
 
 
 # ── Authors ───────────────────────────────────────────────────────────────────
-def list_authors(*, sort="citation", limit=50):
-    return _get("/authors", sort=sort, limit=limit)
+def list_authors(*, query=None, sort="papers", limit=50):
+    return _get("/authors", query=query, sort=sort, limit=limit)
 
 
 def get_author(auid: str):
