@@ -26,8 +26,24 @@ from .serve import PID_FILE, PORT_FILE, daemon_endpoint
 LOCK_FILE = Path.home() / ".scopus-for-dobby" / "daemon.lock"
 LOG_FILE = Path.home() / ".scopus-for-dobby" / "daemon.log"
 DEFAULT_PORT = 8765
-BOOT_TIMEOUT = 5.0  # seconds — uvicorn cold-start budget
+# uvicorn cold-start budget. The first /health triggers DuckDB init + an FTS
+# extension install (possibly a network download), so the default is generous
+# and overridable via SCOPUS_FOR_DOBBY_BOOT_TIMEOUT.
+BOOT_TIMEOUT = 15.0  # seconds
 HEALTH_POLL = 0.05
+HEALTH_TIMEOUT = 2.0  # per-request /health budget — first call does FTS install
+PORT_RETRIES = 3  # bounded attempts when a candidate port loses a TOCTOU race
+
+
+def _boot_timeout() -> float:
+    """Boot budget, overridable via ``SCOPUS_FOR_DOBBY_BOOT_TIMEOUT``."""
+    raw = os.environ.get("SCOPUS_FOR_DOBBY_BOOT_TIMEOUT")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return BOOT_TIMEOUT
 
 
 class DaemonSpawnError(RuntimeError):
@@ -46,7 +62,7 @@ def _port_free(port: int) -> bool:
 def _wait_for_health(base_url: str, deadline: float) -> bool:
     while time.monotonic() < deadline:
         try:
-            r = httpx.get(f"{base_url}/health", timeout=0.5)
+            r = httpx.get(f"{base_url}/health", timeout=HEALTH_TIMEOUT)
             if r.status_code == 200:
                 return True
         except (httpx.RequestError, OSError):
@@ -59,8 +75,19 @@ def _spawn(port: int) -> None:
     """Fork ``scopus-for-dobby serve --background`` as a detached process."""
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     log = open(LOG_FILE, "ab")  # noqa: SIM115 — handed to subprocess
-    cmd = [sys.executable, "-m", "scopus_for_dobby.cli", "serve",
-           "--background", "--port", str(port)]
+    # The daemon log can echo request paths/params; keep it owner-only, mirroring
+    # config.json (utils/api_client.py).
+    with contextlib.suppress(OSError):
+        os.chmod(LOG_FILE, 0o600)
+    cmd = [
+        sys.executable,
+        "-m",
+        "scopus_for_dobby.cli",
+        "serve",
+        "--background",
+        "--port",
+        str(port),
+    ]
     subprocess.Popen(  # noqa: S603
         cmd,
         stdout=log,
@@ -89,27 +116,39 @@ def ensure_daemon(port: int = DEFAULT_PORT) -> str:
         if existing:
             return existing
 
-        if not _port_free(port):
-            raise DaemonSpawnError(
-                f"port {port} is in use but no daemon PID file is registered. "
-                f"Stop whatever is using {port} or wait for it to clear."
-            )
+        # Hold the lock through spawn + health so a concurrently waiting CLI
+        # never observes "no endpoint" and forks a duplicate. _port_free() ->
+        # _spawn() is non-atomic, so if a candidate port is claimed between the
+        # check and the bind, retry with the next port (bounded).
+        boot_timeout = _boot_timeout()
+        last_error = ""
+        for attempt in range(PORT_RETRIES):
+            candidate = port + attempt
+            if not _port_free(candidate):
+                last_error = f"port {candidate} is in use but no daemon PID file is registered"
+                continue
 
-        _spawn(port)
+            _spawn(candidate)
 
-        base_url = f"http://127.0.0.1:{port}"
-        deadline = time.monotonic() + BOOT_TIMEOUT
-        if not _wait_for_health(base_url, deadline):
-            raise DaemonSpawnError(
-                f"daemon did not become healthy within {BOOT_TIMEOUT}s. "
-                f"Check {LOG_FILE} for errors."
-            )
-        return base_url
+            base_url = f"http://127.0.0.1:{candidate}"
+            deadline = time.monotonic() + boot_timeout
+            if _wait_for_health(base_url, deadline):
+                # Health only answers once uvicorn is serving, which the daemon
+                # reaches strictly after writing its pid/port file — so the
+                # endpoint is registered and visible to siblings by now.
+                return base_url
+            last_error = f"daemon on port {candidate} did not become healthy within {boot_timeout}s"
+
+        raise DaemonSpawnError(
+            f"could not start daemon after {PORT_RETRIES} attempt(s): "
+            f"{last_error}. Check {LOG_FILE} for errors."
+        )
 
 
 def stop_daemon(timeout: float = 5.0) -> bool:
     """Send SIGTERM to a running daemon. Returns True if a daemon was stopped."""
     import signal
+
     if not PID_FILE.exists():
         return False
     try:

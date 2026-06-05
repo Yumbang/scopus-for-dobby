@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import os
 import signal
+import socket
 import sys
 from pathlib import Path
 
@@ -17,6 +18,10 @@ import click
 
 PID_FILE = Path.home() / ".scopus-for-dobby" / "daemon.pid"
 PORT_FILE = Path.home() / ".scopus-for-dobby" / "daemon.port"
+
+# Fast liveness probe budget — a recycled PID passes os.kill(pid, 0) but won't
+# answer on the recorded port, so we confirm the port is actually accepting.
+_PROBE_TIMEOUT = 0.5  # seconds
 
 
 def _write_pid(port: int) -> None:
@@ -29,6 +34,17 @@ def _clear_pid() -> None:
     for f in (PID_FILE, PORT_FILE):
         with contextlib.suppress(FileNotFoundError):
             f.unlink()
+
+
+def _port_responds(port: int) -> bool:
+    """Return True if something accepts a TCP connection on the local port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(_PROBE_TIMEOUT)
+        try:
+            s.connect(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
 
 
 def daemon_endpoint() -> str | None:
@@ -48,6 +64,14 @@ def daemon_endpoint() -> str | None:
     except PermissionError:
         # Process exists but we can't signal it — assume alive.
         pass
+    # A recycled PID survives os.kill(pid, 0) but belongs to an unrelated
+    # process that won't answer on our port. Confirm the port is live before
+    # reporting the daemon up; otherwise treat it as dead and clear stale state.
+    # (Our own PID can never be a recycled foreign process, so skip the probe
+    # there — this also keeps the in-process discovery path cheap.)
+    if pid != os.getpid() and not _port_responds(port):
+        _clear_pid()
+        return None
     return f"http://127.0.0.1:{port}"
 
 
@@ -56,20 +80,26 @@ def register(cli):
     @click.option("--host", default="127.0.0.1", show_default=True)
     @click.option("--port", default=8765, type=int, show_default=True)
     @click.option("--reload", is_flag=True, help="(dev) auto-reload on file changes")
-    @click.option("--background", is_flag=True, hidden=True,
-                  help="Internal: spawned by lazy-spawn; suppresses TTY banner.")
-    @click.option("--idle-timeout", default=0.0, type=float,
-                  help="Self-shutdown after N seconds with no requests "
-                       "(0 = run forever). Default 600 in --background mode.")
-    def serve(host: str, port: int, reload: bool, background: bool,
-              idle_timeout: float):
+    @click.option(
+        "--background",
+        is_flag=True,
+        hidden=True,
+        help="Internal: spawned by lazy-spawn; suppresses TTY banner.",
+    )
+    @click.option(
+        "--idle-timeout",
+        default=0.0,
+        type=float,
+        help="Self-shutdown after N seconds with no requests "
+        "(0 = run forever). Default 600 in --background mode.",
+    )
+    def serve(host: str, port: int, reload: bool, background: bool, idle_timeout: float):
         """Run the HTTP daemon. CLI/GUI clients attach to it for all DB access."""
         try:
             import uvicorn
         except ImportError:
             click.echo(
-                "uvicorn not installed. Install with: "
-                "uv pip install -e '.[gui-support]'",
+                "uvicorn not installed. Install with: uv pip install -e '.[gui-support]'",
                 err=True,
             )
             sys.exit(1)
