@@ -9,29 +9,40 @@ import unicodedata
 # ── Field definitions ─────────────────────────────────────────────────────────
 
 FREE_FIELDS = [
-    ("eid",          "EID"),
-    ("scopus_id",    "Scopus ID"),
-    ("doi",          "DOI"),
-    ("title",        "Title"),
+    ("eid", "EID"),
+    ("scopus_id", "Scopus ID"),
+    ("doi", "DOI"),
+    ("title", "Title"),
     ("first_author", "First Author"),
-    ("journal",      "Journal"),
-    ("volume",       "Volume"),
-    ("cover_date",   "Cover Date"),
-    ("cited_by",     "Citations"),
-    ("open_access",  "Open Access"),
+    ("journal", "Journal"),
+    ("volume", "Volume"),
+    ("cover_date", "Cover Date"),
+    ("cited_by", "Citations"),
+    ("open_access", "Open Access"),
 ]
 
 INST_EXTRA = [
     ("all_authors_str", "All Authors"),
-    ("abstract",        "Abstract"),
-    ("keywords",        "Keywords"),
-    ("issn",            "ISSN"),
-    ("issue",           "Issue"),
-    ("pages",           "Pages"),
-    ("source_type",     "Type"),
+    ("abstract", "Abstract"),
+    ("keywords", "Keywords"),
+    ("issn", "ISSN"),
+    ("issue", "Issue"),
+    ("pages", "Pages"),
+    ("source_type", "Type"),
 ]
 
 FULL_FIELDS = FREE_FIELDS + INST_EXTRA
+
+
+def _split_keywords(keywords) -> list[str]:
+    """Split the pipe-separated keyword string into a clean list.
+
+    Splits on "|", strips whitespace, drops empties. Returns [] for
+    None/empty/non-string input.
+    """
+    if not isinstance(keywords, str):
+        return []
+    return [kw.strip() for kw in keywords.split("|") if kw.strip()]
 
 
 def _build_row(article: dict) -> dict:
@@ -40,8 +51,7 @@ def _build_row(article: dict) -> dict:
     all_authors = article.get("all_authors", [])
     if isinstance(all_authors, list) and all_authors:
         authors_str = "; ".join(
-            a.get("name", "") if isinstance(a, dict) else str(a)
-            for a in all_authors
+            a.get("name", "") if isinstance(a, dict) else str(a) for a in all_authors
         )
     else:
         authors_str = article.get("first_author", "")
@@ -77,7 +87,7 @@ def _build_row(article: dict) -> dict:
         "cover_date": article.get("cover_date", ""),
         "cited_by": article.get("cited_by", ""),
         "abstract": article.get("abstract", ""),
-        "keywords": article.get("keywords", ""),
+        "keywords": "; ".join(_split_keywords(article.get("keywords", ""))),
         "open_access": oa_str,
         "source_type": article.get("source_type", ""),
         "affiliations": affs_str,
@@ -87,6 +97,7 @@ def _build_row(article: dict) -> dict:
 
 
 # ── XLSX export ───────────────────────────────────────────────────────────────
+
 
 def export_xlsx(articles: list[dict], output_path: str) -> dict:
     """Export articles to an Excel file.
@@ -140,13 +151,25 @@ def export_xlsx(articles: list[dict], output_path: str) -> dict:
             cell.alignment = body_align
 
     col_widths = {
-        "EID": 22, "Scopus ID": 15, "DOI": 35,
-        "Title": 52, "First Author": 22, "All Authors": 42,
-        "Journal": 36, "ISSN": 12, "Volume": 8,
-        "Issue": 8, "Pages": 12, "Cover Date": 12,
-        "Citations": 10, "Open Access": 11,
-        "Abstract": 60, "Keywords": 35, "Type": 16,
-        "Tags": 20, "Notes": 30,
+        "EID": 22,
+        "Scopus ID": 15,
+        "DOI": 35,
+        "Title": 52,
+        "First Author": 22,
+        "All Authors": 42,
+        "Journal": 36,
+        "ISSN": 12,
+        "Volume": 8,
+        "Issue": 8,
+        "Pages": 12,
+        "Cover Date": 12,
+        "Citations": 10,
+        "Open Access": 11,
+        "Abstract": 60,
+        "Keywords": 35,
+        "Type": 16,
+        "Tags": 20,
+        "Notes": 30,
     }
     for col_idx, (_, hdr) in enumerate(fields, 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = col_widths.get(hdr, 20)
@@ -224,24 +247,20 @@ def export_bibtex(articles: list[dict], output_path: str) -> dict:
         if isinstance(all_authors, list) and all_authors:
             authors_bib = " and ".join(
                 a.get("name", "") if isinstance(a, dict) else str(a)
-                for a in all_authors if (a.get("name") if isinstance(a, dict) else a)
+                for a in all_authors
+                if (a.get("name") if isinstance(a, dict) else a)
             )
         else:
             authors_bib = article.get("first_author", "")
 
         src_field = "journal" if etype in ("article", "misc") else "booktitle"
-        note = (
-            f"Cited by {article.get('cited_by', '0')} (Scopus). "
-            f"EID: {article.get('eid', '')}"
-        )
+        note = f"Cited by {article.get('cited_by', '0')} (Scopus). EID: {article.get('eid', '')}"
 
         def field(name, value):
             v = str(value).strip() if value else ""
             return f"  {name:<12} = {{{_escape_bib(v)}}}," if v else ""
 
-        keywords = article.get("keywords", "")
-        if isinstance(keywords, str):
-            keywords = keywords.replace(" | ", ", ")
+        keywords = ", ".join(_split_keywords(article.get("keywords", "")))
 
         lines = [f"@{etype}{{{key},"]
         for f_str in [
@@ -350,12 +369,8 @@ def export_ris(articles: list[dict], output_path: str) -> dict:
             lines.append(f"AB  - {article['abstract']}")
 
         # Keywords — one KW line per keyword
-        keywords = article.get("keywords", "")
-        if isinstance(keywords, str) and keywords:
-            for kw in keywords.split("|"):
-                kw = kw.strip()
-                if kw:
-                    lines.append(f"KW  - {kw}")
+        for kw in _split_keywords(article.get("keywords", "")):
+            lines.append(f"KW  - {kw}")
 
         # ISSN
         if article.get("issn"):

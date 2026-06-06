@@ -21,8 +21,7 @@ def _save_json(name: str, data: dict):
     """Save session data to a JSON file."""
     _ensure_session_dir()
     path = SESSION_DIR / f"{name}.json"
-    path.write_text(json.dumps(data, indent=2, default=str, ensure_ascii=False),
-                    encoding="utf-8")
+    path.write_text(json.dumps(data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
 
 
 def _load_json(name: str) -> dict | None:
@@ -47,6 +46,7 @@ class Session:
         self._last_search: dict | None = None
         self._last_abstract: dict | None = None
         self._working_collection: str | None = None
+        self._working_collection_loaded: bool = False
         self._search_history: list[str] = []
 
     @property
@@ -77,11 +77,17 @@ class Session:
 
     @property
     def working_collection(self) -> str | None:
+        if not self._working_collection_loaded:
+            data = _load_json("working_collection")
+            self._working_collection = data.get("name") if data else None
+            self._working_collection_loaded = True
         return self._working_collection
 
     @working_collection.setter
     def working_collection(self, name: str | None):
         self._working_collection = name
+        self._working_collection_loaded = True
+        _save_json("working_collection", {"name": name})
 
     def add_to_history(self, query: str):
         """Record a search query."""

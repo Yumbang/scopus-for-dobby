@@ -16,3 +16,7 @@ build/
 config.json
 *.api_key
 *.inst_token
+
+# Local agent/session state
+.omc/
+.claude/settings.local.json
