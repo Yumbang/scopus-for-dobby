@@ -138,6 +138,10 @@ def build_app(idle_timeout: float | None = None):
     def search_like(query: str, limit: int = 50):
         return adb.search_articles_like(query, limit=limit)
 
+    @app.post("/articles/enrich")
+    def enrich_articles(body: dict = Body(...)):
+        return adb.enrich_articles(body.get("enrichments", []))
+
     # ── Tags & notes ─────────────────────────────────────────────────────────
     @app.post("/articles/tag")
     def tag(body: dict = Body(...)):

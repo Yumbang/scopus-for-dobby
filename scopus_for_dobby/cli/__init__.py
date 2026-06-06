@@ -41,6 +41,7 @@ from . import author as _author  # noqa: E402
 from . import collection as _collection  # noqa: E402
 from . import db as _db  # noqa: E402
 from . import export as _export  # noqa: E402
+from . import openalex as _openalex  # noqa: E402
 from . import repl as _repl  # noqa: E402
 from . import search as _search  # noqa: E402
 from . import serve as _serve  # noqa: E402
@@ -51,6 +52,7 @@ _db.register(cli)
 _collection.register(cli)
 _author.register(cli)
 _export.register(cli)
+_openalex.register(cli)
 _serve.register(cli)
 _repl.register(cli)
 

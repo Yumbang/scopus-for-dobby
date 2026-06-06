@@ -77,6 +77,10 @@ def remove_entries(eids):
     return _delete("/articles", {"eids": list(eids)})
 
 
+def enrich_articles(enrichments):
+    return _post("/articles/enrich", {"enrichments": list(enrichments)})
+
+
 # ── Tags & notes ──────────────────────────────────────────────────────────────
 def tag_articles(eids, tags):
     return _post("/articles/tag", {"eids": list(eids), "tags": list(tags)})

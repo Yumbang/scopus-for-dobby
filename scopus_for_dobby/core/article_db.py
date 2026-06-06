@@ -26,7 +26,7 @@ DB_PATH = CONFIG_DIR / "articles.duckdb"
 
 # Current on-disk schema version. Bump and add a migration gate in
 # ``_ensure_schema`` whenever the DDL changes incompatibly.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,13 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             tags            JSON DEFAULT '[]',
             notes           VARCHAR DEFAULT '',
             added_at        VARCHAR,
-            updated_at      VARCHAR
+            updated_at      VARCHAR,
+            openalex_id          VARCHAR DEFAULT '',
+            oa_status            VARCHAR DEFAULT '',
+            oa_url               VARCHAR DEFAULT '',
+            openalex_cited_by    INTEGER DEFAULT 0,
+            openalex_topics      JSON DEFAULT '[]',
+            openalex_enriched_at VARCHAR DEFAULT ''
         )
     """)
     conn.execute("""
@@ -177,15 +183,29 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """)
     # ── Schema versioning gate ───────────────────────────────────────────────
     # Single-row meta table recording the on-disk schema version. No migration
-    # framework — just a gate future migrations can branch on. A fresh DB is
-    # stamped with SCHEMA_VERSION; existing DBs keep whatever version they hold.
+    # framework — just a gate migrations branch on. A fresh DB is stamped with
+    # SCHEMA_VERSION; older DBs are migrated forward in place below.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_meta (
             version INTEGER NOT NULL
         )
     """)
-    if conn.execute("SELECT COUNT(*) FROM schema_meta").fetchone()[0] == 0:
+    row = conn.execute("SELECT version FROM schema_meta").fetchone()
+    if row is None:
         conn.execute("INSERT INTO schema_meta (version) VALUES (?)", [SCHEMA_VERSION])
+    elif row[0] < 2:
+        # v1 → v2: OpenAlex enrichment columns. ADD COLUMN IF NOT EXISTS is
+        # idempotent, so a half-applied migration self-heals on rerun.
+        for col_ddl in (
+            "openalex_id VARCHAR DEFAULT ''",
+            "oa_status VARCHAR DEFAULT ''",
+            "oa_url VARCHAR DEFAULT ''",
+            "openalex_cited_by INTEGER DEFAULT 0",
+            "openalex_topics JSON DEFAULT '[]'",
+            "openalex_enriched_at VARCHAR DEFAULT ''",
+        ):
+            conn.execute(f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col_ddl}")  # noqa: S608
+        conn.execute("UPDATE schema_meta SET version = ?", [SCHEMA_VERSION])
     _schema_initialized.add(path)
 
 
@@ -338,7 +358,10 @@ def _row_to_dict(row: tuple, columns: list[str]) -> dict:
     """Convert a DuckDB row tuple to a dict, parsing JSON fields."""
     d = dict(zip(columns, row, strict=False))
     # Parse JSON fields
-    for key in ("all_authors", "affiliations", "index_keywords", "subject_areas", "tags"):
+    for key in (
+        "all_authors", "affiliations", "index_keywords", "subject_areas", "tags",
+        "openalex_topics",
+    ):
         if key in d and isinstance(d[key], str):
             try:
                 d[key] = json.loads(d[key])
@@ -358,6 +381,8 @@ _ARTICLE_COLUMNS = [
     "open_access", "abstract", "keywords", "issn", "source_type",
     "affiliations", "index_keywords", "subject_areas",
     "tags", "notes", "added_at", "updated_at",
+    "openalex_id", "oa_status", "oa_url",
+    "openalex_cited_by", "openalex_topics", "openalex_enriched_at",
 ]
 
 
@@ -896,6 +921,45 @@ def set_note(eid: str, note: str) -> dict:
         conn.execute("UPDATE articles SET notes = ? WHERE eid = ?", [note, eid])
         _emit_event(conn, "article.note_set", "article", eid, {})
     return {"eid": eid, "note": note}
+
+
+def enrich_articles(enrichments: list[dict]) -> dict:
+    """Apply OpenAlex enrichment fields to existing articles (matched by eid).
+
+    Each enrichment dict carries ``eid`` plus the fields produced by
+    ``core.openalex.normalize_enrichment``. Unknown EIDs are skipped.
+    """
+    conn = _get_conn()
+    enriched = 0
+    skipped = 0
+    with _txn(conn):
+        for e in enrichments:
+            eid = e.get("eid")
+            if not eid or not conn.execute(
+                "SELECT eid FROM articles WHERE eid = ?", [eid]
+            ).fetchone():
+                skipped += 1
+                continue
+            conn.execute(
+                "UPDATE articles SET openalex_id = ?, oa_status = ?, oa_url = ?, "
+                "openalex_cited_by = ?, openalex_topics = ?, openalex_enriched_at = ? "
+                "WHERE eid = ?",
+                [
+                    e.get("openalex_id", ""),
+                    e.get("oa_status", ""),
+                    e.get("oa_url", ""),
+                    int(e.get("cited_by_count") or 0),
+                    json.dumps(e.get("topics") or []),
+                    _now(),
+                    eid,
+                ],
+            )
+            enriched += 1
+            _emit_event(
+                conn, "article.enriched", "article", eid,
+                {"openalex_id": e.get("openalex_id", "")},
+            )
+    return {"enriched": enriched, "skipped": skipped}
 
 
 def get_article(eid: str) -> dict:
