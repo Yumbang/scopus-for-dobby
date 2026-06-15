@@ -302,6 +302,29 @@ RIS_TYPE_MAP = {
     "Trade Journal": "JOUR",
 }
 
+# Page ranges arrive with various dash characters from Scopus: ASCII hyphen,
+# en-dash (–), em-dash (—), and the minus sign (−).
+_PAGE_RANGE_RE = re.compile(r"\s*[-‒–—−]\s*")
+
+
+def _ris_value(value) -> str:
+    """Flatten a value for a single-line RIS field.
+
+    Every RIS line must begin with a two-character tag, so embedded
+    newlines (common in Scopus abstracts and the odd title) would
+    otherwise produce continuation lines that strict parsers like
+    EndNote reject or truncate. Collapse all internal whitespace —
+    including CR/LF — into single spaces.
+    """
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _ris_tag(lines: list[str], name: str, value) -> None:
+    """Append a ``name  - value`` RIS line if the cleaned value is non-empty."""
+    v = _ris_value(value)
+    if v:
+        lines.append(f"{name}  - {v}")
+
 
 def export_ris(articles: list[dict], output_path: str) -> dict:
     """Export articles to RIS format (compatible with EndNote, Zotero, Mendeley).
@@ -322,65 +345,54 @@ def export_ris(articles: list[dict], output_path: str) -> dict:
         lines = [f"TY  - {ty}"]
 
         # Title
-        if article.get("title"):
-            lines.append(f"TI  - {article['title']}")
+        _ris_tag(lines, "TI", article.get("title", ""))
 
         # Authors — one AU line per author
         all_authors = article.get("all_authors", [])
         if isinstance(all_authors, list) and all_authors:
             for a in all_authors:
-                name = a.get("name", "") if isinstance(a, dict) else str(a)
-                if name:
-                    lines.append(f"AU  - {name}")
-        elif article.get("first_author"):
-            lines.append(f"AU  - {article['first_author']}")
+                name = a.get("name", "") if isinstance(a, dict) else a
+                _ris_tag(lines, "AU", name)
+        else:
+            _ris_tag(lines, "AU", article.get("first_author", ""))
 
         # Journal / source
-        if article.get("journal"):
-            tag = "JO" if ty in ("JOUR", "GEN") else "T2"
-            lines.append(f"{tag}  - {article['journal']}")
+        if _ris_value(article.get("journal", "")):
+            _ris_tag(lines, "JO" if ty in ("JOUR", "GEN") else "T2", article["journal"])
 
         # Year and date
-        cover_date = article.get("cover_date", "")
+        cover_date = _ris_value(article.get("cover_date", ""))
         if cover_date:
-            lines.append(f"PY  - {cover_date[:4]}")
-            lines.append(f"DA  - {cover_date.replace('-', '/')}")
+            _ris_tag(lines, "PY", cover_date[:4])
+            _ris_tag(lines, "DA", cover_date.replace("-", "/"))
 
         # Volume, issue, pages
-        if article.get("volume"):
-            lines.append(f"VL  - {article['volume']}")
-        if article.get("issue"):
-            lines.append(f"IS  - {article['issue']}")
-        if article.get("pages"):
-            pages = article["pages"]
-            if "-" in pages:
-                sp, ep = pages.split("-", 1)
-                lines.append(f"SP  - {sp.strip()}")
-                lines.append(f"EP  - {ep.strip()}")
-            else:
-                lines.append(f"SP  - {pages}")
+        _ris_tag(lines, "VL", article.get("volume", ""))
+        _ris_tag(lines, "IS", article.get("issue", ""))
+        pages = _ris_value(article.get("pages", ""))
+        if pages:
+            parts = _PAGE_RANGE_RE.split(pages, maxsplit=1)
+            _ris_tag(lines, "SP", parts[0])
+            if len(parts) == 2 and parts[1]:
+                _ris_tag(lines, "EP", parts[1])
 
         # DOI
-        if article.get("doi"):
-            lines.append(f"DO  - {article['doi']}")
+        _ris_tag(lines, "DO", article.get("doi", ""))
 
         # Abstract
-        if article.get("abstract"):
-            lines.append(f"AB  - {article['abstract']}")
+        _ris_tag(lines, "AB", article.get("abstract", ""))
 
         # Keywords — one KW line per keyword
         for kw in _split_keywords(article.get("keywords", "")):
-            lines.append(f"KW  - {kw}")
+            _ris_tag(lines, "KW", kw)
 
         # ISSN
-        if article.get("issn"):
-            lines.append(f"SN  - {article['issn']}")
+        _ris_tag(lines, "SN", article.get("issn", ""))
 
         # Scopus identifiers
-        if article.get("eid"):
-            lines.append(f"AN  - {article['eid']}")
-        if article.get("scopus_id"):
-            lines.append(f"C1  - Scopus ID: {article['scopus_id']}")
+        _ris_tag(lines, "AN", article.get("eid", ""))
+        if _ris_value(article.get("scopus_id", "")):
+            _ris_tag(lines, "C1", f"Scopus ID: {article['scopus_id']}")
 
         # Database provider
         lines.append("DB  - Scopus")
@@ -388,10 +400,12 @@ def export_ris(articles: list[dict], output_path: str) -> dict:
         # End of record
         lines.append("ER  - ")
 
-        ris_entries.append("\n".join(lines))
+        ris_entries.append("\r\n".join(lines))
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("\n\n".join(ris_entries) + "\n")
+    # RIS mandates CRLF line endings; newline="" keeps Python from translating
+    # them, so the file is correct on every platform (notably EndNote/Windows).
+    with open(output_path, "w", encoding="utf-8", newline="") as f:
+        f.write("\r\n\r\n".join(ris_entries) + "\r\n")
 
     return {
         "exported": len(articles),

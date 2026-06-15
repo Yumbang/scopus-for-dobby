@@ -5,6 +5,8 @@ scopus_for_dobby.core.export with realistic DB-format article dicts.
 No API calls are made.
 """
 
+import re
+
 import pytest
 
 from scopus_for_dobby.core import export as export_mod
@@ -137,6 +139,63 @@ class TestRISFieldMapping:
         text = (tmp_path / "nokw.ris").read_text()
         kw_values = [v for tag, v in _parse_ris(text) if tag == "KW"]
         assert kw_values == []
+
+
+# ── RIS spec compliance (regression: every line must start with a tag) ─────────
+
+
+class TestRISCompliance:
+    # Scopus abstracts and the occasional title carry embedded newlines.
+    NEWLINE_ARTICLE = {
+        "title": "A Title\nbroken across lines",
+        "first_author": "Doe J.",
+        "all_authors": [{"name": "Doe J."}],
+        "journal": "Some Journal",
+        "cover_date": "2024-01-01",
+        "abstract": "First sentence.\nSecond sentence.\r\nThird with CRLF.",
+        "keywords": "alpha | beta",
+        "source_type": "Journal",
+        "eid": "2-s2.0-1",
+    }
+
+    def test_no_untagged_continuation_lines(self, tmp_path):
+        # Embedded newlines must be collapsed so every physical line begins
+        # with a two-char RIS tag — otherwise EndNote truncates the record.
+        out = str(tmp_path / "nl.ris")
+        export_mod.export_ris([self.NEWLINE_ARTICLE], out)
+        raw = (tmp_path / "nl.ris").read_bytes().decode("utf-8")
+        for line in raw.split("\r\n"):
+            if line.strip():
+                assert re.match(r"^[A-Z][A-Z0-9]  - ", line), f"untagged line: {line!r}"
+        pairs = dict(_parse_ris(raw))
+        assert "\n" not in pairs["TI"] and "\r" not in pairs["TI"]
+        assert pairs["AB"] == "First sentence. Second sentence. Third with CRLF."
+
+    def test_crlf_line_endings(self, tmp_path):
+        # The RIS spec mandates CRLF; some EndNote importers reject bare LF.
+        out = str(tmp_path / "crlf.ris")
+        export_mod.export_ris([FULL_ARTICLE], out)
+        raw = (tmp_path / "crlf.ris").read_bytes()
+        assert b"\r\n" in raw
+        assert b"\n" not in raw.replace(b"\r\n", b"")  # no stray LF
+
+    @pytest.mark.parametrize(
+        "pages,expected",
+        [
+            ("1234-1256", ("1234", "1256")),  # ASCII hyphen
+            ("S1–S9", ("S1", "S9")),  # en-dash
+            ("100—110", ("100", "110")),  # em-dash
+            ("e0012345", ("e0012345", None)),  # single page, no EP
+        ],
+    )
+    def test_page_range_dash_variants(self, tmp_path, pages, expected):
+        article = {**SPARSE_ARTICLE, "pages": pages}
+        out = str(tmp_path / "pg.ris")
+        export_mod.export_ris([article], out)
+        pairs = _parse_ris((tmp_path / "pg.ris").read_bytes().decode())
+        sp = next((v for t, v in pairs if t == "SP"), None)
+        ep = next((v for t, v in pairs if t == "EP"), None)
+        assert (sp, ep) == expected
 
 
 # ── BibTeX entry validity ─────────────────────────────────────────────────────
