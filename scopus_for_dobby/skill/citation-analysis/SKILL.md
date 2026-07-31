@@ -83,9 +83,12 @@ labels, but do not treat it as a required step in this workflow.
 | `--max-nodes N` | Expansion budget beyond your seeds. Defaults to `max(5000, 25 x seeds)`, so it scales with the corpus. Checked *between* levels — a level never half-runs — and truncation reports which level it stopped before |
 | `--node-fields authorships` | Put author names on nodes. Opt-in; needed for any person-level question ("does this corpus still cite Bohr"), which the graph otherwise cannot answer |
 | `--deep-direction` | Direction past level 1 — `references` by default, because citers cost one request *per node* |
+| `--per-seed-limit N` | Cap references/citers taken per node (default 200). A budget lever on large corpora |
+| `--from-file PATH` | Analyse an earlier export — **no API calls**. Cannot report seed-match or DOI coverage, which the export does not carry |
+| `--dry-run` | Build depth 1, then project what going deeper costs. Not free: depth 1 is the expensive level |
 | `--top N` | Rows per section |
 | `--communities` | Cluster into themes; needs the optional `[analysis]` extra |
-| `--json` | Full structured report |
+| `--json` | Full structured report. **Global flag — it goes before the subcommand**: `scopus-for-dobby --json openalex analyze …` |
 
 `analyze` and `graph` share defaults, so the same flags produce the same graph.
 
