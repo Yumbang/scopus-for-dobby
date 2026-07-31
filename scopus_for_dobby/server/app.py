@@ -17,12 +17,14 @@ or programmatically::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import signal
 import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 from scopus_for_dobby.core import article_db as adb
@@ -38,10 +40,11 @@ def build_app(idle_timeout: float | None = None):
     """Build the FastAPI app. Imported lazily so FastAPI is an optional dep.
 
     ``idle_timeout`` (seconds) enables a background watchdog that sends
-    SIGTERM to the current process when no request has arrived within
-    the window. Used by the lazy-spawn daemon (``serve --background``)
-    so an idle machine doesn't carry a forgotten uvicorn process. Pass
-    ``None`` (default) for tests and the foreground ``serve`` command.
+    SIGTERM to the current process when no request has arrived within the
+    window, so a machine nobody is using doesn't carry a forgotten uvicorn
+    process. ``serve --background`` always sets it — that is the only
+    configuration the daemon runs in for real. Pass ``None`` (default) for
+    tests and the foreground ``serve`` command.
     """
     try:
         from fastapi import Body, FastAPI, HTTPException
@@ -51,7 +54,6 @@ def build_app(idle_timeout: float | None = None):
             "FastAPI not installed. Install with `pip install scopus-for-dobby[gui-support]`."
         ) from e
 
-    app = FastAPI(title="scopus-for-dobby", version="1.0.0")
     # ``last`` is the monotonic timestamp of the most recent activity;
     # ``streams`` counts currently-connected SSE clients. The watchdog
     # only kills the daemon when both are idle (no recent request AND no
@@ -60,6 +62,40 @@ def build_app(idle_timeout: float | None = None):
 
     def _touch() -> None:
         activity["last"] = time.monotonic()
+
+    @asynccontextmanager
+    async def _lifespan(_app):
+        """Own the idle watchdog for the life of the app.
+
+        Registered as a lifespan handler rather than ``@app.on_event``, which
+        FastAPI deprecated and will remove — and whose removal would break
+        daemon startup outright. The task is also cancelled on shutdown here,
+        which the on_event version never did.
+        """
+        task = None
+        if idle_timeout and idle_timeout > 0:
+            task = asyncio.create_task(_watch_idle())
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    async def _watch_idle() -> None:
+        # Poll at a quarter of the window, with a small floor so short
+        # timeouts (tests) stay responsive without busy-looping.
+        check = max(idle_timeout / 4, 0.05)
+        while True:
+            await asyncio.sleep(check)
+            if activity["streams"] > 0:
+                continue
+            if time.monotonic() - activity["last"] >= idle_timeout:
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+    app = FastAPI(title="scopus-for-dobby", version="1.0.0", lifespan=_lifespan)
 
     @app.middleware("http")
     async def _track_activity(request, call_next):
@@ -70,22 +106,6 @@ def build_app(idle_timeout: float | None = None):
             # Refresh on completion too, so requests that outlive the
             # idle window (e.g. a closing SSE stream) don't go stale.
             _touch()
-
-    if idle_timeout and idle_timeout > 0:
-
-        @app.on_event("startup")
-        async def _start_idle_watchdog():
-            async def _watch():
-                check = max(5.0, idle_timeout / 4)
-                while True:
-                    await asyncio.sleep(check)
-                    if activity["streams"] > 0:
-                        continue
-                    if time.monotonic() - activity["last"] >= idle_timeout:
-                        os.kill(os.getpid(), signal.SIGTERM)
-                        return
-
-            asyncio.create_task(_watch())
 
     @app.get("/health")
     def health():
