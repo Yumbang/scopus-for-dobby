@@ -68,7 +68,7 @@ Four invariants worth preserving:
 
 ## Security
 
-API credentials live in `~/.scopus-for-dobby/config.json` (chmod 600), never in the project directory. Never log or commit API keys. Ruff's `S` (bandit) rules are enabled.
+API credentials live in `~/.scopus-for-dobby/config.json` (chmod 600), never in the project directory. Two are stored there: the Scopus key/inst-token, and an optional OpenAlex `api_key` (`openalex key`). OpenAlex is metered per request — anonymous callers share a small budget **per IP address**, so a key is what keeps one process from exhausting another's allowance. Never log or commit API keys. Ruff's `S` (bandit) rules are enabled.
 
 ## Architecture
 

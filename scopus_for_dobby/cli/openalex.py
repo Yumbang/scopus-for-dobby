@@ -20,6 +20,28 @@ _FORMATS = ("graphml", "csv", "json")
 _ALL = 100_000
 
 
+_key_hint_shown = False
+
+
+def _hint_api_key(skin) -> None:
+    """Mention the free API key once per process, before spending budget.
+
+    Deliberately a pre-flight hint rather than another line in the 429 handler:
+    by the time a rate limit fires the day's allowance is already gone and
+    resets at midnight UTC, so advice at that point costs the user a day.
+    """
+    global _key_hint_shown
+    if _key_hint_shown or state.json_output or oa.get_api_key():
+        return
+    _key_hint_shown = True
+    skin.hint(
+        "     No OpenAlex API key: you are on the anonymous budget "
+        "(~1000 requests/day, shared with everything else on this machine). "
+        "A free key gives ~10x and is yours alone — "
+        "https://openalex.org/settings/api then `openalex key <KEY>`"
+    )
+
+
 @click.group("openalex")
 def openalex():
     """OpenAlex integration — enrichment, citation graphs, and analysis.
@@ -69,6 +91,7 @@ def oa_enrich(collection, tag, force, limit):
 
     if not state.json_output:
         skin.info(f"Querying OpenAlex for {len(candidates)} DOI(s)...")
+        _hint_api_key(skin)
 
     works = oa.fetch_works_by_dois([a["doi"] for a in candidates])
     by_doi = {oa.normalize_doi(a["doi"]): a for a in candidates}
@@ -231,6 +254,7 @@ def oa_graph(
     out_path = out_path or f"citation_graph.{fmt}"
 
     if not state.json_output:
+        _hint_api_key(skin)
         depth_note = f", depth {depth}" if depth > 1 else ""
         skin.info(
             f"Building {direction} graph from {len(seeds)} seed(s) "
@@ -352,6 +376,7 @@ def oa_analyze(
         build_depth = 1 if dry_run else depth
         if not state.json_output:
             skin.info(f"Building graph from {len(seeds)} seed(s), depth {build_depth}...")
+            _hint_api_key(skin)
         graph = oa.build_citation_graph(
             seeds,
             direction=direction,

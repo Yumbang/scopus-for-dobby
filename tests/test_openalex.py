@@ -497,3 +497,67 @@ class TestCheapDefaults:
 
         for cmd in (oa_graph, oa_analyze):
             assert next(p.default for p in cmd.params if p.name == "depth") == 1
+
+
+class TestApiKeyGuidance:
+    """The key must be discoverable *before* a 429, not only after one.
+
+    Every other mention is reachable only once the budget is gone — and it
+    resets at midnight UTC, so advice at that point costs the user a day.
+    """
+
+    def test_documented_where_a_user_starts(self):
+        from pathlib import Path as P
+
+        root = P(__file__).resolve().parent.parent
+        for doc in ("README.md", "scopus_for_dobby/skill/scopus-for-dobby/SKILL.md"):
+            text = (root / doc).read_text()
+            assert "openalex key" in text, f"{doc} never mentions the key command"
+            assert "settings/api" in text, f"{doc} never links where to get one"
+
+    def test_hint_fires_before_spending_and_only_once(self, monkeypatch):
+        from scopus_for_dobby.cli import openalex as cli_oa
+
+        shown = []
+
+        class _Skin:
+            def hint(self, msg):
+                shown.append(msg)
+
+        monkeypatch.setattr(cli_oa.oa, "get_api_key", lambda: None)
+        monkeypatch.setattr(cli_oa.state, "json_output", False)
+        monkeypatch.setattr(cli_oa, "_key_hint_shown", False)
+        cli_oa._hint_api_key(_Skin())
+        cli_oa._hint_api_key(_Skin())
+        assert len(shown) == 1, "the hint should not repeat within one run"
+        assert "settings/api" in shown[0]
+
+    def test_silent_when_a_key_is_configured(self, monkeypatch):
+        from scopus_for_dobby.cli import openalex as cli_oa
+
+        shown = []
+
+        class _Skin:
+            def hint(self, msg):
+                shown.append(msg)
+
+        monkeypatch.setattr(cli_oa.oa, "get_api_key", lambda: "SECRET")
+        monkeypatch.setattr(cli_oa, "_key_hint_shown", False)
+        cli_oa._hint_api_key(_Skin())
+        assert shown == []
+
+    def test_silent_in_json_mode(self, monkeypatch):
+        """--json output is parsed; a hint would corrupt it."""
+        from scopus_for_dobby.cli import openalex as cli_oa
+
+        shown = []
+
+        class _Skin:
+            def hint(self, msg):
+                shown.append(msg)
+
+        monkeypatch.setattr(cli_oa.oa, "get_api_key", lambda: None)
+        monkeypatch.setattr(cli_oa.state, "json_output", True)
+        monkeypatch.setattr(cli_oa, "_key_hint_shown", False)
+        cli_oa._hint_api_key(_Skin())
+        assert shown == []

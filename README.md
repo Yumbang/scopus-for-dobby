@@ -31,6 +31,12 @@ dependencies, faster startup, no background process left running. See
 # 2. Configure
 scopus-for-dobby auth setup --api-key YOUR_KEY
 
+# 2b. Optional but recommended — a free OpenAlex key for open-access links,
+#     citation counts and graphs. Without one you share a small daily budget
+#     with every other program on this machine.
+#     Free at https://openalex.org/settings/api
+scopus-for-dobby openalex key YOUR_OPENALEX_KEY
+
 # 3. Search (results auto-save to local DB)
 scopus-for-dobby search "deep learning" --sort citedby-count
 
@@ -113,7 +119,8 @@ Because the skill is packaged with the code, upgrading the CLI and re-running
 | `author` | `coauthors` / `note` | Co-author network and notes |
 | `collection` | `create` / `delete` | Manage named collections |
 | `collection` | `add` / `remove` | Add/remove articles from collections |
-| `openalex` | `enrich` | Add open-access links, OA status, and OpenAlex citation counts (free, keyless) |
+| `openalex` | `key` | Set the free OpenAlex API key (~10x the anonymous daily budget) |
+| `openalex` | `enrich` | Add open-access links, OA status, and OpenAlex citation counts |
 | `openalex` | `graph` | Build citation graphs (`--depth 1..3`) → GraphML / Gephi CSV / node-link JSON |
 | `openalex` | `analyze` | Interpret a graph: gaps, themes, foundations, off-topic seeds (see below) |
 | `profile` | | What a set of papers is *about* — topic/keyword profile with coverage |

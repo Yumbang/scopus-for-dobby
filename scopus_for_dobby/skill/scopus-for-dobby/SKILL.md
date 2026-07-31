@@ -32,6 +32,11 @@ scopus-for-dobby --help >/dev/null 2>&1 || uv tool install --editable .
 
 # Configure API key (free at https://dev.elsevier.com)
 scopus-for-dobby auth setup --api-key YOUR_KEY
+
+# OpenAlex is metered too. Set its free key before any enrich/graph work:
+# without one you are on ~1000 requests/day shared PER IP; with one, ~10x that
+# billed to the account. Free at https://openalex.org/settings/api
+scopus-for-dobby openalex key YOUR_OPENALEX_KEY
 # Institutional tier (abstracts, full author lists):
 scopus-for-dobby auth setup --api-key YOUR_KEY --inst-token YOUR_TOKEN
 
