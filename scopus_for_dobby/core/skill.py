@@ -31,6 +31,13 @@ Each target installs at either scope:
     Under the current directory — travels with the repo, so collaborators and
     CI get it by checking out.
 
+``install``, ``uninstall`` and ``status`` are one lifecycle: whatever options
+place a skill take it back out again, and ``status`` compares an installed
+copy's content hash against the packaged one. That comparison is the point of
+``status`` — an install goes stale on any upgrade the user does not re-run
+``skill install`` for, and a skill documenting behaviour the CLI no longer has
+is worse than no skill at all, because the agent follows it confidently.
+
 Adding a target is one entry in ``TARGETS``. Paths are only claimed for
 layouts that can actually be verified; inventing a path for an agent nobody
 tested installs a skill that silently never loads.
@@ -38,7 +45,9 @@ tested installs a skill that silently never loads.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -186,15 +195,64 @@ def destination(
 #: installed into an agent directory.
 _NOT_PAYLOAD = {"evals", "__pycache__"}
 
+#: Files that are never payload wherever they turn up. The Finder scatters
+#: `.DS_Store` through installed directories, and treating one as content
+#: would report an otherwise pristine install as stale.
+_NOT_PAYLOAD_FILES = {".DS_Store"}
+
+
+def _is_payload(rel: Path) -> bool:
+    """Whether a path relative to a skill root counts as installed content."""
+    return (
+        not (_NOT_PAYLOAD & set(rel.parts))
+        and rel.name not in _NOT_PAYLOAD_FILES
+        and rel.suffix != ".pyc"
+    )
+
+
+def _tree_files(root: Path) -> list[str]:
+    """Payload files under ``root``, relative to it, sorted."""
+    if not root.is_dir():
+        return []
+    return sorted(
+        str(p.relative_to(root))
+        for p in root.rglob("*")
+        if p.is_file() and _is_payload(p.relative_to(root))
+    )
+
 
 def payload_files(skill: str = SKILL_NAME) -> list[str]:
     """The files an install would actually place, relative to the source."""
-    src = resolve_skill(skill).src
-    return sorted(
-        str(p.relative_to(src))
-        for p in src.rglob("*")
-        if p.is_file() and not (_NOT_PAYLOAD & set(p.relative_to(src).parts))
-    )
+    return _tree_files(resolve_skill(skill).src)
+
+
+def installed_files(path: Path) -> list[str]:
+    """The payload files present in an installed skill directory.
+
+    Filtered exactly like the source side, so the two lists are comparable:
+    anything the install would have skipped is skipped here too.
+    """
+    return _tree_files(path)
+
+
+def skill_content_hash(skill: str | Skill, root: Path | None = None) -> str:
+    """SHA-256 over a skill's payload — sorted relative paths plus file bytes.
+
+    Both sides of a staleness check run through this one function: the
+    packaged source (``root`` omitted) and an installed copy (``root`` set to
+    the installed directory), so "identical content" means the same thing on
+    either side. Paths are hashed alongside the bytes, which makes a rename or
+    a stray extra file a change rather than a silent match.
+    """
+    obj = skill if isinstance(skill, Skill) else resolve_skill(skill)
+    tree = obj.src if root is None else root
+    digest = hashlib.sha256()
+    for rel in _tree_files(tree):
+        digest.update(rel.encode())
+        digest.update(b"\0")
+        digest.update((tree / rel).read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _copy_skill(src: Path, dest: Path) -> list[str]:
@@ -261,6 +319,51 @@ def update_agents_md(path: Path, section: str, skill: Skill) -> str:
         return "unchanged"
     path.write_text(updated)
     return "updated"
+
+
+def has_agents_md_section(path: Path, skill: Skill) -> bool:
+    """Whether AGENTS.md currently carries this skill's marker block."""
+    if not path.is_file():
+        return False
+    body = path.read_text()
+    return skill.mark_begin in body and skill.mark_end in body
+
+
+def _rejoin(head: str, tail: str) -> str:
+    """Splice the text around a removed block back together.
+
+    Only the run of newlines at the seam is normalised — to one blank line,
+    the same separation an install writes. Every other byte on both sides is
+    the user's and is passed through untouched, so repeated
+    install/uninstall cycles neither eat prose nor stack blank lines.
+    """
+    head, tail = head.rstrip("\n"), tail.lstrip("\n")
+    if not head:
+        return tail
+    if not tail:
+        return f"{head}\n"
+    return f"{head}\n\n{tail}"
+
+
+def remove_agents_md_section(path: Path, skill: Skill) -> str:
+    """Remove one skill's section from AGENTS.md.
+
+    Returns ``"removed"``, ``"absent"`` (file exists, no such block) or
+    ``"missing"`` (no file at all). The markers make this surgical: the block
+    goes and nothing else does. The file itself is never deleted, even when
+    the last block leaves only a heading behind — the CLI may have created it
+    once, but what is in it now is the user's.
+    """
+    if not path.exists():
+        return "missing"
+    original = path.read_text()
+    if not (skill.mark_begin in original and skill.mark_end in original):
+        return "absent"
+
+    head, rest = original.split(skill.mark_begin, 1)
+    _, tail = rest.split(skill.mark_end, 1)
+    path.write_text(_rejoin(head, tail))
+    return "removed"
 
 
 def install(
@@ -332,6 +435,171 @@ def install(
         # Flattened conveniences for humans and simple --json consumers.
         "paths": [e["path"] for e in installed],
         "files": sorted({f for e in installed for f in e["files"]}),
+    }
+
+
+def uninstall(
+    agent: str,
+    *,
+    scope: str | None = None,
+    project_dir: Path | None = None,
+    dest: Path | None = None,
+    skills: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Remove installed skills for ``agent``. Defaults to all of them.
+
+    The option surface mirrors :func:`install` so the two are symmetric:
+    whatever arguments put a skill somewhere take it back out again.
+
+    Removing something that was never installed is reported as
+    ``"not_installed"``, not raised: the caller asked for a state and that
+    state already holds. Only the skill directory and this skill's AGENTS.md
+    block are touched — nothing the CLI did not write is removed.
+    """
+    target = resolve_target(agent)
+    effective_scope = normalize_scope(scope) if scope else target.scopes[0]
+    chosen = [resolve_skill(n) for n in (skills or list(SKILLS))]
+    root = None if dest is not None else scope_root(effective_scope, project_dir)
+
+    # A pointer section is only ever written for a project-scope install, so
+    # that is the only place there can be one to take back out.
+    agents_md_path = (
+        root / "AGENTS.md"
+        if target.writes_agents_md and root is not None and effective_scope == "project"
+        else None
+    )
+
+    removed = []
+    for skill in chosen:
+        if dest is not None:
+            skill_dir = Path(dest).expanduser().resolve() / skill.name
+        else:
+            skill_dir = destination(agent, effective_scope, project_dir, skill.name)
+
+        present = skill_dir.is_dir()
+        entry = {
+            "skill": skill.name,
+            "path": str(skill_dir),
+            "files": installed_files(skill_dir),
+            "status": ("would_remove" if dry_run else "removed") if present else "not_installed",
+        }
+        if present and not dry_run:
+            shutil.rmtree(skill_dir)
+
+        if agents_md_path is not None:
+            if dry_run:
+                entry["agents_md_status"] = (
+                    "would_remove" if has_agents_md_section(agents_md_path, skill) else "absent"
+                )
+            else:
+                entry["agents_md_status"] = remove_agents_md_section(agents_md_path, skill)
+        removed.append(entry)
+
+    return {
+        "agent": target.name,
+        "label": target.label,
+        "scope": effective_scope if dest is None else "custom",
+        "dry_run": dry_run,
+        "agents_md": str(agents_md_path) if agents_md_path is not None else None,
+        "skills": removed,
+        # Flattened conveniences, matching `install`'s shape.
+        "paths": [e["path"] for e in removed if e["status"] != "not_installed"],
+        "removed": [e["skill"] for e in removed if e["status"] != "not_installed"],
+    }
+
+
+def _status_entry(target: Target, scope: str, skill: Skill, project_dir: Path | None) -> dict:
+    """One agent × scope × skill row: installed, current or stale, and why."""
+    path = destination(target.name, scope, project_dir, skill.name)
+    packaged = payload_files(skill.name)
+    entry = {
+        "agent": target.name,
+        "label": target.label,
+        "scope": scope,
+        "skill": skill.name,
+        "path": str(path),
+        "installed": path.is_dir(),
+        "state": "not_installed",
+        "packaged_hash": skill_content_hash(skill),
+        "installed_hash": None,
+        "packaged_files": len(packaged),
+        "installed_files": 0,
+        "missing_files": [],
+        "extra_files": [],
+        "modified_files": [],
+        "agents_md": None,
+    }
+
+    if target.writes_agents_md and scope == "project":
+        agents_md = scope_root(scope, project_dir) / "AGENTS.md"
+        entry["agents_md"] = {
+            "path": str(agents_md),
+            "section": has_agents_md_section(agents_md, skill),
+        }
+
+    if not entry["installed"]:
+        return entry
+
+    found = installed_files(path)
+    entry["installed_files"] = len(found)
+    entry["installed_hash"] = skill_content_hash(skill, root=path)
+    entry["state"] = "current" if entry["installed_hash"] == entry["packaged_hash"] else "stale"
+    if entry["state"] == "stale":
+        # Name the difference: "stale" on its own tells nobody what to look at.
+        packaged_set, found_set = set(packaged), set(found)
+        entry["missing_files"] = [f for f in packaged if f not in found_set]
+        entry["extra_files"] = [f for f in found if f not in packaged_set]
+        entry["modified_files"] = [
+            f
+            for f in packaged
+            if f in found_set and (path / f).read_bytes() != (skill.src / f).read_bytes()
+        ]
+    return entry
+
+
+def status(
+    agent: str | None = None,
+    *,
+    scope: str | None = None,
+    project_dir: Path | None = None,
+    skills: list[str] | None = None,
+) -> dict:
+    """Where every packaged skill stands, per agent and scope.
+
+    Staleness is the reason this exists. An installed copy silently drifts
+    out of date on every upgrade the user does not re-run ``skill install``
+    for, and a skill that documents behaviour the CLI no longer has is worse
+    than none at all — the agent confidently follows it. Comparing content
+    hashes surfaces that; the file lists say what changed.
+    """
+    targets = [resolve_target(agent)] if agent else list(TARGETS.values())
+    chosen = [resolve_skill(n) for n in (skills or list(SKILLS))]
+    wanted = normalize_scope(scope) if scope else None
+
+    entries = []
+    for target in targets:
+        scopes = [s for s in target.scopes if wanted in (None, s)]
+        if not scopes and agent:
+            raise SkillInstallError(
+                f"{target.label} does not support scope {wanted!r} "
+                f"(supported: {', '.join(target.scopes)})"
+            )
+        for target_scope in scopes:
+            for skill in chosen:
+                entries.append(_status_entry(target, target_scope, skill, project_dir))
+
+    states = Counter(e["state"] for e in entries)
+    return {
+        "project_dir": str((project_dir or Path.cwd()).resolve()),
+        "scope": wanted,
+        "entries": entries,
+        "summary": {
+            "installed": sum(1 for e in entries if e["installed"]),
+            "current": states["current"],
+            "stale": states["stale"],
+            "not_installed": states["not_installed"],
+        },
     }
 
 

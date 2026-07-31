@@ -15,6 +15,10 @@ from scopus_for_dobby.core import skill as skill_mod
 from ._output import handle_error, output
 from ._state import state
 
+#: How each install state reads in `skill status`. Upper case for the one that
+#: needs acting on, so a stale install stands out in a long listing.
+_STATE_LABELS = {"current": "current", "stale": "STALE", "not_installed": "not installed"}
+
 
 def _scope_from_flags(scope, is_global, is_project):
     """Resolve --scope / --global / --project into one scope, or None."""
@@ -105,6 +109,125 @@ def register(cli):
             click.echo(f"  note:  {result['note']}")
         if not dry_run:
             click.echo("\nStart a new agent session to pick them up.")
+
+    @skill_grp.command("uninstall")
+    @click.argument("agent", default="claude")
+    @click.option(
+        "--scope",
+        type=click.Choice(["global", "project", "user", "local"]),
+        default=None,
+        help="Where to remove from (default: the agent's usual scope).",
+    )
+    @click.option("--global", "is_global", is_flag=True, help="Shorthand for --scope global.")
+    @click.option("--project", "is_project", is_flag=True, help="Shorthand for --scope project.")
+    @click.option(
+        "--dir",
+        "dest",
+        type=click.Path(file_okay=False, path_type=Path),
+        default=None,
+        help="Remove from this directory instead of the standard location.",
+    )
+    @click.option(
+        "--skill",
+        "skills",
+        multiple=True,
+        help="Uninstall only this skill (repeatable). Default: all of them.",
+    )
+    @click.option("--dry-run", is_flag=True, help="Show what would happen, write nothing.")
+    @handle_error
+    def uninstall_cmd(agent, scope, is_global, is_project, dest, skills, dry_run):
+        """Remove the installed skills for AGENT (default: claude).
+
+        Removes the skill directory and, where one was written, this skill's
+        AGENTS.md section. Anything already absent is reported, not an error.
+
+        \b
+        Examples:
+          scopus-for-dobby skill uninstall                     # all skills, Claude, global
+          scopus-for-dobby skill uninstall agents --project    # incl. its AGENTS.md section
+          scopus-for-dobby skill uninstall --skill citation-analysis
+          scopus-for-dobby skill uninstall --dry-run
+        """
+        result = skill_mod.uninstall(
+            agent,
+            scope=_scope_from_flags(scope, is_global, is_project),
+            dest=dest,
+            skills=list(skills) or None,
+            dry_run=dry_run,
+        )
+
+        if state.json_output:
+            output(result)
+            return
+
+        verb = "Would remove" if dry_run else "Removed"
+        gone = len(result["removed"])
+        total = len(result["skills"])
+        click.echo(
+            f"{verb} {gone} of {total} skills for {result['label']}  (scope: {result['scope']})"
+        )
+        for entry in result["skills"]:
+            if entry["status"] == "not_installed":
+                click.echo(f"  not installed  {entry['skill']}  ({entry['path']})")
+            else:
+                word = "would remove" if dry_run else "removed"
+                click.echo(
+                    f"  {word}  {entry['skill']}  ({len(entry['files'])} files)  {entry['path']}"
+                )
+        if result.get("agents_md"):
+            statuses = {e.get("agents_md_status", "absent") for e in result["skills"]}
+            click.echo(f"  AGENTS.md: {result['agents_md']} ({', '.join(sorted(statuses))})")
+
+    @skill_grp.command("status")
+    @click.argument("agent", required=False)
+    @click.option(
+        "--scope",
+        type=click.Choice(["global", "project", "user", "local"]),
+        default=None,
+        help="Only report this scope (default: every scope the agent supports).",
+    )
+    @handle_error
+    def status_cmd(agent, scope):
+        """Show which skills are installed for AGENT, and whether they are current.
+
+        Compares each installed copy against the packaged one, so a skill that
+        has drifted out of date since it was installed says so.
+
+        \b
+        Examples:
+          scopus-for-dobby skill status               # every agent, every scope
+          scopus-for-dobby skill status claude --scope global
+          scopus-for-dobby --json skill status
+        """
+        result = skill_mod.status(agent, scope=scope)
+
+        if state.json_output:
+            output(result)
+            return
+
+        group = None
+        for entry in result["entries"]:
+            if (entry["agent"], entry["scope"]) != group:
+                group = (entry["agent"], entry["scope"])
+                click.echo(f"\n{entry['label']}  ({entry['agent']}, {entry['scope']})")
+                click.echo(f"  {Path(entry['path']).parent}")
+            label = _STATE_LABELS.get(entry["state"], entry["state"])
+            click.echo(f"    {label:<14} {entry['skill']}")
+            for kind in ("missing", "extra", "modified"):
+                names = entry[f"{kind}_files"]
+                if names:
+                    click.echo(f"        {kind}: {', '.join(names)}")
+            pointer = entry["agents_md"]
+            if entry["installed"] and pointer and not pointer["section"]:
+                click.echo(f"        no AGENTS.md section — {pointer['path']}")
+
+        summary = result["summary"]
+        click.echo(
+            f"\n{summary['current']} current, {summary['stale']} stale, "
+            f"{summary['not_installed']} not installed"
+        )
+        if summary["stale"]:
+            click.echo("Re-run `scopus-for-dobby skill install` to refresh the stale ones.")
 
     @skill_grp.command("list")
     @handle_error
