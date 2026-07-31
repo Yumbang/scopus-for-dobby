@@ -41,6 +41,42 @@ scopus-for-dobby export --format xlsx -o papers.xlsx
 scopus-for-dobby
 ```
 
+## Use with an AI agent
+
+The CLI ships an **agent skill** — the Scopus query syntax, the stateful library
+model, OpenAlex enrichment, and the failure modes — so an agent drives it
+correctly instead of guessing at flags. Install it with the CLI itself:
+
+```bash
+# 1. The CLI (the binary dependency)
+uv tool install --editable .
+
+# 2. The skill, for whichever agent you use
+scopus-for-dobby skill install                    # Claude Code, all projects
+scopus-for-dobby skill install claude --project   # just this repo
+scopus-for-dobby skill install agents --project   # Codex, Cursor, Zed, Aider…
+```
+
+```bash
+scopus-for-dobby skill list        # every target and where it installs
+scopus-for-dobby skill install --dry-run
+```
+
+| Target | Global | Project |
+|--------|--------|---------|
+| `claude` | `~/.claude/skills/scopus-for-dobby/` | `./.claude/skills/scopus-for-dobby/` |
+| `agents` | `~/.agents/skills/scopus-for-dobby/` | `./.agents/skills/scopus-for-dobby/` + `AGENTS.md` |
+
+Claude Code discovers skills on its own, so the `claude` target writes **only**
+the skill directory — no `CLAUDE.md` edit. The `agents` target adds a short
+pointer section to `AGENTS.md`, because those agents have no skill discovery and
+would otherwise never find the directory; decline it with `--no-agents-md`. The
+section sits between HTML markers, so re-running refreshes it in place and never
+disturbs the rest of the file.
+
+Because the skill is packaged with the code, upgrading the CLI and re-running
+`skill install` keeps the two in step — they can't drift.
+
 ## Commands
 
 | Group | Command | Description |
@@ -66,6 +102,7 @@ scopus-for-dobby
 | `openalex` | `enrich` | Add open-access links, OA status, and OpenAlex citation counts (free, keyless) |
 | `openalex` | `graph` | Build citation graphs → GraphML / Gephi CSV / node-link JSON |
 | `export` | | Export to XLSX, BibTeX, or RIS |
+| `skill` | `install` / `list` / `path` | Install the bundled agent skill (see [Use with an AI agent](#use-with-an-ai-agent)) |
 | `serve` | | Run the local HTTP daemon (for the macOS GUI / multi-process access) |
 
 ### `serve` — HTTP daemon

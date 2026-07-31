@@ -39,6 +39,14 @@ Extras: `gui` is the only meaningful one (the HTTP daemon — `fastapi`, `uvicor
 
 The project default is **3.14**, pinned in `.python-version` — that is what `uv venv` and `uv run` select. `requires-python` stays at `>=3.10`, which is a supported floor rather than a target: CI runs the suite on both ends. `[tool.ruff] target-version` tracks the **floor** (`py310`) so pyupgrade never rewrites code into syntax 3.10 cannot parse; raise the two together or not at all.
 
+## Agent skill
+
+`scopus_for_dobby/skill/` is the agent-facing documentation, shipped as package data (declared in `[tool.setuptools.package-data]`) and installed by `scopus-for-dobby skill install`. Targets live in `core/skill.py::TARGETS`; adding an agent is one entry there.
+
+Because it ships with the code, **the skill is part of the change**: any edit to CLI behavior, install extras, or the daemon model must update `skill/SKILL.md` and `skill/references/` in the same commit. The out-of-repo copy this replaced drifted badly — it documented the removed lazy-spawn daemon for weeks.
+
+`evals/` beside a skill is development material: excluded from both the wheel and the install, so editable and wheel installs produce identical agent directories.
+
 ## Security
 
 API credentials live in `~/.scopus-for-dobby/config.json` (chmod 600), never in the project directory. Never log or commit API keys. Ruff's `S` (bandit) rules are enabled.

@@ -86,6 +86,47 @@ jobs:
           test ! -e "$HOME/.scopus-for-dobby/daemon.pid" \
             || (echo "a daemon was spawned by a plain CLI command" && exit 1)
 
+  skill-packaging:
+    # `skill install` reads files shipped as package-data. A missing glob in
+    # pyproject still passes the test suite (which runs from the source tree)
+    # and fails only for people who installed from a wheel — so install from a
+    # built wheel, outside the repo, and prove the skill lands.
+    name: Skill ships in the wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+
+      - name: Build wheel and install it outside the source tree
+        # `rm -rf build` matters: setuptools reuses build/lib, so files from a
+        # previous layout survive there and get packaged alongside the current
+        # ones. Harmless on a fresh runner, but this job exists to catch
+        # packaging faults, so it should not depend on the checkout being new.
+        run: |
+          rm -rf build dist
+          uv venv --clear
+          uv build --wheel -o dist
+          uv pip install dist/*.whl
+
+      - name: Install the skill from the wheel
+        run: |
+          mkdir -p "$RUNNER_TEMP/elsewhere"
+          cd "$RUNNER_TEMP/elsewhere"
+          CLI="$GITHUB_WORKSPACE/.venv/bin/scopus-for-dobby"
+          "$CLI" skill list
+          "$CLI" skill install
+          test -f "$HOME/.claude/skills/scopus-for-dobby/SKILL.md" \
+            || (echo "SKILL.md missing — package-data glob is wrong" && exit 1)
+          test -n "$(ls "$HOME/.claude/skills/scopus-for-dobby/references/"*.md)" \
+            || (echo "references/ missing from the wheel" && exit 1)
+          "$CLI" skill install agents --project
+          test -f AGENTS.md || (echo "AGENTS.md pointer not written" && exit 1)
+
   macos-gui:
     name: macOS GUI build
     # Needs Xcode 16+: current xcodegen emits project format 77, which

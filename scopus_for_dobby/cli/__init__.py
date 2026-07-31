@@ -45,6 +45,7 @@ from . import openalex as _openalex  # noqa: E402
 from . import repl as _repl  # noqa: E402
 from . import search as _search  # noqa: E402
 from . import serve as _serve  # noqa: E402
+from . import skill as _skill  # noqa: E402
 
 _auth.register(cli)
 _search.register(cli)
@@ -54,6 +55,7 @@ _author.register(cli)
 _export.register(cli)
 _openalex.register(cli)
 _serve.register(cli)
+_skill.register(cli)
 _repl.register(cli)
 
 

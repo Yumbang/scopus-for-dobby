@@ -1,0 +1,23 @@
+{
+  "skill_name": "scopus-for-dobby",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "How do I search for papers by a specific author at a specific university and save the top-cited ones to a collection?",
+      "expected_output": "Should explain using AUTH() and AFFIL() field codes with AND, --sort citedby-count, and then collection add with --indices",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "I have a collection called thesis-refs. How do I export it to BibTeX and also send it to Zotero?",
+      "expected_output": "Should show export --format bibtex --collection thesis-refs and plugin send zotero --collection thesis-refs",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "What's the difference between free and institutional tier? I'm only seeing first authors, no abstracts when I retrieve papers.",
+      "expected_output": "Should explain the two tiers, that META view (free) lacks abstracts/full author lists, and how to upgrade with auth setup --inst-token",
+      "files": []
+    }
+  ]
+}

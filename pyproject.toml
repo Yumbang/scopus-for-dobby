@@ -65,6 +65,12 @@ scopus-for-dobby = "scopus_for_dobby.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 
+# The agent skill ships inside the package so `skill install` works from any
+# install, with no repo checkout. Without this it is absent from the wheel and
+# the command fails only for people who installed normally.
+[tool.setuptools.package-data]
+scopus_for_dobby = ["skill/*/SKILL.md", "skill/*/references/*.md"]
+
 [tool.ruff]
 # Deliberately the floor from requires-python, not the default interpreter:
 # this is what stops pyupgrade rewriting code into syntax that 3.10 cannot
