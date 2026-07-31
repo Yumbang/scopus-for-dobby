@@ -20,3 +20,6 @@ config.json
 # Local agent/session state
 .omc/
 .claude/settings.local.json
+# Agent worktrees live inside the repo; they are checkouts of this same
+# repository, so linters and greps would otherwise scan a second copy.
+.claude/worktrees/

@@ -40,6 +40,14 @@ def cli_http_in_process(request, monkeypatch):
 
     if not HAS_DAEMON_STACK or request.node.get_closest_marker("in_process"):
         # No factory installed → the router falls through to core.article_db.
+        #
+        # Neutralize daemon discovery explicitly rather than relying on there
+        # being no daemon: `daemon_endpoint()` reads the *developer's real*
+        # ~/.scopus-for-dobby/daemon.{pid,port}, so with a daemon running — as
+        # any GUI user or anyone mid-`serve` will have — the router would pick
+        # the HTTP backend and these tests would fail for reasons that have
+        # nothing to do with the code under test.
+        monkeypatch.setattr(cli_client, "daemon_endpoint", lambda: None)
         yield
         cli_client.reset_backend()
         return

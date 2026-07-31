@@ -80,6 +80,9 @@ where = ["."]
 scopus_for_dobby = ["skill/*/SKILL.md", "skill/*/references/*.md"]
 
 [tool.ruff]
+# Agent worktrees are checkouts of this same repo nested inside it; without
+# this, `ruff check .` lints a second copy and reports another branch's work.
+extend-exclude = [".claude/worktrees"]
 # Deliberately the floor from requires-python, not the default interpreter:
 # this is what stops pyupgrade rewriting code into syntax that 3.10 cannot
 # parse. Raise it only together with requires-python.
