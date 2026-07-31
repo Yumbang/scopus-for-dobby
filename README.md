@@ -63,11 +63,18 @@ scopus-for-dobby skill install --skill citation-analysis   # just one
 |---|---|
 | `scopus-for-dobby` | Driving the CLI: query syntax, the stateful library model, collections, enrichment, export |
 | `citation-analysis` | Reading a citation graph: what a search found, what it missed, what to read next |
+| `corpus-profiling` | Characterising a set too large to read: topic/keyword profiles and their coverage caveats |
 
 ```bash
-scopus-for-dobby skill list        # every target and where it installs
+scopus-for-dobby skill list         # every skill, target, and install path
+scopus-for-dobby skill status       # installed? current, or stale since an upgrade?
+scopus-for-dobby skill uninstall --skill citation-analysis
 scopus-for-dobby skill install --dry-run
 ```
+
+`skill status` is worth running after any upgrade: an installed copy does not
+update itself, and a skill describing behaviour the CLI no longer has is worse
+than none, because the agent follows it confidently.
 
 | Target | Global | Project |
 |--------|--------|---------|
@@ -109,8 +116,9 @@ Because the skill is packaged with the code, upgrading the CLI and re-running
 | `openalex` | `enrich` | Add open-access links, OA status, and OpenAlex citation counts (free, keyless) |
 | `openalex` | `graph` | Build citation graphs (`--depth 1..3`) → GraphML / Gephi CSV / node-link JSON |
 | `openalex` | `analyze` | Interpret a graph: gaps, themes, foundations, off-topic seeds (see below) |
+| `profile` | | What a set of papers is *about* — topic/keyword profile with coverage |
 | `export` | | Export to XLSX, BibTeX, or RIS |
-| `skill` | `install` / `list` / `path` | Install the bundled agent skill (see [Use with an AI agent](#use-with-an-ai-agent)) |
+| `skill` | `install` / `uninstall` / `status` / `list` / `path` | Manage the bundled agent skills (see [Use with an AI agent](#use-with-an-ai-agent)) |
 | `serve` | | Run the local HTTP daemon (for the macOS GUI / multi-process access) |
 
 ### `openalex analyze` — what your search found, and missed
@@ -119,7 +127,7 @@ Because the skill is packaged with the code, upgrading the CLI and re-running
 scopus-for-dobby openalex analyze --collection review              # depth 1
 scopus-for-dobby openalex analyze --collection review --depth 2 --communities
 scopus-for-dobby openalex analyze --collection review --depth 3 --dry-run
-scopus-for-dobby openalex analyze --from-file map.json --json      # no API calls
+scopus-for-dobby --json openalex analyze --from-file map.json      # no API calls
 ```
 
 Reports, in order of usefulness: **coverage**, **gap papers** (highly cited
@@ -130,9 +138,20 @@ results). Nothing is written to the database.
 `--depth 2..3` expands past the seeds' immediate neighbours. Beyond level 1
 only *corroborated* nodes expand — those at least `--min-reached` (default 2)
 of your own papers point at — which keeps the graph on-topic and affordable:
-works carry ~35–50 references each, so ungated expansion reaches millions of
+works carry ~19–50 references each, so ungated expansion reaches millions of
 nodes by depth 3. Every node carries `role` (`seed` / `expanded` / `frontier`),
-`depth`, and `reached_by`.
+`depth`, `reached_by`, and `seed_reached_by`.
+
+Two numbers that look alike and are not: `reached_by` counts every expanding
+node pointing at a work (the relevance gate's signal), while `seed_reached_by`
+counts only *your* papers. At depth ≥2 they diverge sharply — on a real corpus
+one work showed 148 against 38 — so gap papers rank on the latter, and the
+output prints it as "N of your papers".
+
+The node budget (`--max-nodes`, default `max(5000, 25 × seeds)`) is checked
+**between levels**, never inside one, so a level either runs completely or does
+not start. That keeps `role` honest: a half-expanded level would leave papers
+marked as though their reference lists were complete.
 
 That role matters for honesty: a depth-1 graph is a *star* (edges only
 seed→reference and citer→seed), so PageRank and betweenness on it describe the

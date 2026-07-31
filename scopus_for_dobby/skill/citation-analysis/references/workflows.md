@@ -106,8 +106,8 @@ includes `frontier` nodes and present it as a property of the field.
 ## 6. Compare two collections
 
 ```bash
-openalex analyze --collection method-a --json > a.json
-openalex analyze --collection method-b --json > b.json
+scopus-for-dobby --json openalex analyze --collection method-a > a.json
+scopus-for-dobby --json openalex analyze --collection method-b > b.json
 ```
 
 Compare the `co_citation` sections: shared foundations mean the two literatures

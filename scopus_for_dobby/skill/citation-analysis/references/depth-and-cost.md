@@ -68,13 +68,46 @@ current one, and as a projection beyond that, labelled as such.
 | Option | Default | Effect |
 |---|---|---|
 | `--min-reached` | 2 | The relevance gate. The main lever |
-| `--max-nodes` | 5000 | Hard stop; sets `truncated: true` |
+| `--max-nodes` | `max(5000, 25 x seeds)` | Expansion budget beyond your seeds |
 | `--per-seed-limit` | 200 | Caps references/citers taken per node |
 | `--deep-direction` | references | Direction past level 1 |
+| `--node-fields` | *(none)* | `authorships` puts author names on nodes |
 
-Truncation is always reported. If `truncated` is true, tell the user the
-findings are partial and suggest either a tighter seed set or a higher
-`--min-reached` rather than simply raising `--max-nodes`.
+### How the budget behaves — worth understanding
+
+Depth-1 size is roughly **19-50 x the seed count** (works carry that many
+references), so a corpus of 273 seeds reaches ~5,000 nodes before a single
+expansion level finishes. That is why the default scales with the corpus rather
+than sitting at a fixed number.
+
+The budget is checked **between levels, never inside one**. A level either runs
+completely or does not start. This matters more than it sounds: expanding only
+part of a level would leave the unexpanded papers marked as though their
+reference lists were complete, and every downstream measure — coupling,
+co-citation, outliers — would quietly compute over papers whose references were
+never fetched, in seed order rather than at random.
+
+Level 1 always completes, whatever the budget. The cap governs expansion
+*beyond* your corpus; the seeds are the input you chose.
+
+When it does stop, `truncated: true` and `stopped_before_level: N` say exactly
+where. Report that as "not expanded past depth N-1" — the levels that ran are
+complete and unbiased. Prefer a tighter seed set or a higher `--min-reached`
+over simply raising `--max-nodes`.
+
+### Scaling by corpus size
+
+| Seeds | Depth-1 nodes (approx) | Suggested `--min-reached` |
+|---|---|---|
+| 5 | ~200 | 2 |
+| 20 | ~700 | 2 |
+| 100 | ~2,000 | 2-3 |
+| 270 | ~5,000 | 3 |
+| 500+ | ~10,000+ | 3-4, and consider `-d references` |
+
+With more seeds, corroboration is easier to reach, so the gate should rise with
+the corpus — otherwise depth 2 expands far more than you want. Always
+`--dry-run` first on anything above ~100 seeds.
 
 ## Reusing a graph
 
@@ -84,7 +117,7 @@ times:
 ```bash
 scopus-for-dobby openalex graph --collection review --depth 2 -o map.json
 scopus-for-dobby openalex analyze --from-file map.json --communities
-scopus-for-dobby openalex analyze --from-file map.json --top 50 --json
+scopus-for-dobby --json openalex analyze --from-file map.json --top 50
 ```
 
 `--from-file` makes **no API calls**. GraphML and JSON can both be read back;

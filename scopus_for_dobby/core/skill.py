@@ -94,6 +94,13 @@ SKILLS: dict[str, Skill] = {
             "what to read next — plus which metrics the graph's shape supports."
         ),
     ),
+    "corpus-profiling": Skill(
+        name="corpus-profiling",
+        summary=(
+            "Characterising a set of papers too large to read: topic and keyword "
+            "profiles, distinctive terms, coverage caveats."
+        ),
+    ),
 }
 
 #: Back-compat for callers that assumed a single skill.

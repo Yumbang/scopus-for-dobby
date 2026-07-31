@@ -40,7 +40,14 @@ papers, so its shape is a product of how far you expanded:
 
 What *is* valid: **bibliographic coupling** (papers sharing references →
 research fronts), **co-citation** (references cited together → the
-intellectual base), and **gap papers** (`reached_by` × `cited_by_count`).
+intellectual base), and **gap papers** (`seed_reached_by` × `cited_by_count`).
+
+**`reached_by` is not "how many of my papers cite this".** It counts every
+expanding node pointing at a work — the signal the relevance gate needs, but at
+depth ≥2 it includes expanded nodes and overstates corpus interest badly (on a
+real 273-seed corpus EPR showed `reached_by` 148 against 38 actual seed
+citations). Use **`seed_reached_by`**, which is what the human output prints as
+"N of your papers".
 
 ## Commands
 
@@ -55,7 +62,7 @@ scopus-for-dobby openalex analyze --collection review --depth 2 --communities
 scopus-for-dobby openalex analyze --collection review --depth 3 --dry-run
 
 # Re-analyze an existing export without spending API calls
-scopus-for-dobby openalex analyze --from-file map.json --json
+scopus-for-dobby --json openalex analyze --from-file map.json
 
 # Export for Gephi/networkx (analysis is a separate step)
 scopus-for-dobby openalex graph --collection review --depth 2 -o map.graphml
@@ -68,7 +75,8 @@ saved papers. Seeds need DOIs; those without one are reported, not fatal.
 |---|---|
 | `--depth 1..3` | Expansion levels. Default 1. |
 | `--min-reached N` | Expand a node only if N papers you hold point at it (default 2) |
-| `--max-nodes N` | Hard stop (default 5000); truncation is always reported |
+| `--max-nodes N` | Expansion budget beyond your seeds. Defaults to `max(5000, 25 x seeds)`, so it scales with the corpus. Checked *between* levels — a level never half-runs — and truncation reports which level it stopped before |
+| `--node-fields authorships` | Put author names on nodes. Opt-in; needed for any person-level question ("does this corpus still cite Bohr"), which the graph otherwise cannot answer |
 | `--deep-direction` | Direction past level 1 — `references` by default, because citers cost one request *per node* |
 | `--top N` | Rows per section |
 | `--communities` | Cluster into themes; needs the optional `[analysis]` extra |
@@ -84,8 +92,9 @@ Lead with what is actionable:
    whether the graph was truncated. If coverage is poor, say so *before* the
    findings; everything downstream inherits it.
 2. **Gap papers** — the highest-value output. Give title, year, citation count,
-   and how many of their papers cite it. `[3x]` means three of their own papers
-   cite it and they do not have it.
+   and `seed_reached_by`, which the output renders as "3 of your papers" —
+   meaning three of *their own* papers cite it and they do not have it. Never
+   quote `reached_by` as that figure.
 3. **Themes** — what the query actually covers, with representative papers.
 4. **Foundations** — most co-cited works.
 5. **Outliers** — seeds sharing no references with the rest; usually off-topic

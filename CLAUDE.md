@@ -45,6 +45,9 @@ The project default is **3.14**, pinned in `.python-version` — that is what `u
 
 - `scopus-for-dobby` — driving the CLI
 - `citation-analysis` — reading a citation graph
+- `corpus-profiling` — characterising a large set of papers by topic/keyword
+
+Skill descriptions are a shared trigger space: each must claim its own question and explicitly disclaim the others', or the wrong one loads. `corpus-profiling` in particular must not fire when a plain `db list` is what was wanted — its description says so, and a test asserts the descriptions do not collide.
 
 Because they ship with the code, **the skills are part of the change**: any edit to CLI behavior, install extras, or the daemon model must update the relevant `SKILL.md` and `references/` in the same commit. The out-of-repo copy this replaced drifted badly — it documented the removed lazy-spawn daemon for weeks.
 
@@ -54,10 +57,14 @@ Because they ship with the code, **the skills are part of the change**: any edit
 
 `core/openalex.py` builds graphs (`build_citation_graph`, `--depth 1..3`); `core/graph_analysis.py` interprets them; `cli/openalex.py::analyze` presents them. Nothing is persisted to DuckDB — graphs live in memory and in files, so this works on any database.
 
-Two invariants worth preserving:
+`core/text_analysis.py` + `cli/profile.py` are the text-side counterpart: controlled-vocabulary profiling over `openalex_topics` / `index_keywords` / `subject_areas`, stdlib only.
 
-- **Beyond depth 1, expansion is relevance-gated** (`min_reached`). Ungated, ~35–50 references per work means millions of nodes at depth 3.
-- **Structural metrics may only see `seed`/`expanded` nodes.** A `frontier` node's missing edges are an artifact of where expansion stopped. A depth-1 graph is a star, so centrality on it is degenerate — `describe_topology()` is what refuses it, and the refusal is reported to the user rather than silently dropped.
+Four invariants worth preserving:
+
+- **Beyond depth 1, expansion is relevance-gated** (`min_reached`). Ungated, ~19–50 references per work means millions of nodes at depth 3.
+- **The node budget is checked between levels, never inside one.** A half-expanded level leaves seeds marked `role: seed` with references never fetched, which every downstream measure then treats as complete — and the loss is in iteration order, so it is systematically biased.
+- **Structural metrics may only see `seed`/`expanded` nodes.** A `frontier` node's missing edges are an artifact of where expansion stopped. A depth-1 graph is a star, so centrality on it is degenerate — `describe_topology()` refuses it and reports why rather than silently dropping the section.
+- **`reached_by` is not seed citations.** It counts every expanding node; `seed_citation_counts()` derives the seed-only figure from the edge list rather than trusting a stored field, so an older export cannot silently overstate.
 
 ## Security
 

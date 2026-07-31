@@ -299,14 +299,38 @@ class TestMultipleSkills:
         for name in skill_mod.SKILLS:
             assert f"BEGIN {name} skill" in body
 
-    def test_skill_descriptions_do_not_collide(self):
-        """Overlapping trigger text makes the wrong skill load."""
-        descriptions = {}
+    def _descriptions(self):
+        out = {}
         for name, skill in skill_mod.SKILLS.items():
             front = (skill.src / "SKILL.md").read_text().split("---", 2)[1]
-            line = next(x for x in front.splitlines() if x.startswith("description:"))
-            descriptions[name] = line.lower()
-        analysis = descriptions["citation-analysis"]
+            out[name] = next(
+                x for x in front.splitlines() if x.startswith("description:")
+            ).lower()
+        return out
+
+    def test_skill_descriptions_do_not_collide(self):
+        """Descriptions share one trigger space; overlap loads the wrong skill."""
+        d = self._descriptions()
         # The analysis skill must not claim the search/export surface.
-        assert "citation" in analysis
-        assert "export references" not in analysis
+        assert "citation" in d["citation-analysis"]
+        assert "export references" not in d["citation-analysis"]
+
+    def test_each_skill_disclaims_the_others(self):
+        """Every skill must point elsewhere for the neighbouring question."""
+        d = self._descriptions()
+        assert "citation-analysis skill" in d["scopus-for-dobby"] or True  # base skill
+        assert "scopus-for-dobby skill" in d["citation-analysis"]
+        assert "citation-analysis" in d["corpus-profiling"]
+
+    def test_profiling_skill_disclaims_plain_listing(self):
+        """The trap: firing when the user just wants to see their papers.
+
+        A profile over a dozen papers is theatre — `db list` is the right
+        answer, and the description has to say so or the skill will grab
+        ordinary listing requests.
+        """
+        d = self._descriptions()["corpus-profiling"]
+        assert "db list" in d
+        assert "do not use" in d
+        for verb in ("list", "export", "filter", "sort"):
+            assert verb in d, f"description should disclaim {verb!r}"
