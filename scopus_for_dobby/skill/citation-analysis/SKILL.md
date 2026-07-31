@@ -71,9 +71,14 @@ scopus-for-dobby openalex graph --collection review --depth 2 -o map.graphml
 Seeds come from `--collection`, `--tag`, or positional EIDs — any batch of
 saved papers. Seeds need DOIs; those without one are reported, not fatal.
 
+`openalex enrich` is **not** a prerequisite. `analyze` matches seeds to OpenAlex
+by DOI itself. Enriching first is still worth it for open-access links and topic
+labels, but do not treat it as a required step in this workflow.
+
 | Option | Meaning |
 |---|---|
-| `--depth 1..3` | Expansion levels. Default 1. |
+| `--depth 1..3` | Expansion levels. Default 1 — deeper costs real budget, see `depth-and-cost.md` |
+| `--direction` | `references` (default, batched — cheap) / `cited-by` (**one request per seed**) / `both`. The dominant cost lever |
 | `--min-reached N` | Expand a node only if N papers you hold point at it (default 2) |
 | `--max-nodes N` | Expansion budget beyond your seeds. Defaults to `max(5000, 25 x seeds)`, so it scales with the corpus. Checked *between* levels — a level never half-runs — and truncation reports which level it stopped before |
 | `--node-fields authorships` | Put author names on nodes. Opt-in; needed for any person-level question ("does this corpus still cite Bohr"), which the graph otherwise cannot answer |

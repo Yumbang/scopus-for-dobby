@@ -360,7 +360,13 @@ def corpus_stats(graph: dict) -> dict:
         "seeds": roles[ROLE_SEED],
         "expanded": roles[ROLE_EXPANDED],
         "frontier": roles[ROLE_FRONTIER],
-        "unmatched_seeds": list(graph.get("unmatched") or []),
+        # None means "not recorded", which is what a graph loaded from a file
+        # can honestly say. Collapsing that to [] would report an unmeasured
+        # figure as a measured zero.
+        "unmatched_seeds": (
+            None if graph.get("unmatched") is None else list(graph["unmatched"])
+        ),
+        "coverage_from_file": bool((graph.get("meta") or {}).get("from_file")),
         # Seeds that matched OpenAlex but carry no reference list. They inflate
         # every seed total while contributing to no reference-based measure, so
         # `seeds_with_references` is the real denominator for those figures.

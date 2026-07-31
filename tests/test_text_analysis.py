@@ -351,3 +351,27 @@ class TestYearDistribution:
     def test_median_is_a_real_year_even_for_even_counts(self):
         articles = [_art("a", cover_date="2018"), _art("b", cover_date="2021")]
         assert ta.year_distribution(articles)["median"] == 2018
+
+
+class TestAuthorKeywordsAreReachable:
+    """Regression: an 84%-covered field was reported but unselectable.
+
+    `keywords` (author-supplied, free text) sat in COVERAGE_FIELDS but not
+    VOCAB_FIELDS, so `--field auto` could never choose it and no `--field`
+    value mapped to it — while the coverage table advertised it at 84%.
+    """
+
+    def test_author_keywords_are_a_vocabulary(self):
+        assert "keywords" in ta.VOCAB_FIELDS
+
+    def test_auto_can_select_author_keywords(self):
+        articles = [{"keywords": "membranes; fouling"} for _ in range(5)]
+        assert ta.best_field(articles)["field"] == "keywords"
+
+    def test_cli_exposes_an_explicit_name_for_each_field(self):
+        from scopus_for_dobby.cli.profile import _FIELD_MAP
+
+        assert _FIELD_MAP["author-keywords"] == "keywords"
+        assert _FIELD_MAP["index-keywords"] == "index_keywords"
+        # every vocabulary must be reachable by some explicit --field value
+        assert set(ta.VOCAB_FIELDS) <= set(_FIELD_MAP.values())

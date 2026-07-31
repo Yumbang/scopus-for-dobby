@@ -1,6 +1,6 @@
 ---
 name: corpus-profiling
-description: "Summarise what a LARGE set of saved papers is ABOUT, using scopus-for-dobby's `profile` command — controlled-vocabulary topic/keyword frequency, distinctive terms, keyword co-occurrence, and year distribution. Use ONLY when the user asks a question about the *subject matter of a set as a whole* that cannot be answered by looking at the papers: 'what are these 500 papers about', 'what themes are in this collection', 'what is this search actually covering', 'summarise the topics', 'which keywords dominate', 'has the focus shifted over time'. Do NOT use this to list, show, count, filter, sort, tag or export papers — `db list` already does that and reading its output is the correct answer for small sets. Do NOT use it for citation structure, gaps, or seminal works — that is the citation-analysis skill. If fewer than ~30 papers are involved, or the user wants to see the papers themselves rather than a characterisation of the set, do not use this skill."
+description: "Statistically characterise a LARGE set of saved papers — many dozens or more — that is too big to read, using scopus-for-dobby's `profile` command. TWO CONDITIONS MUST BOTH HOLD, CHECK THEM FIRST: (1) the set is large, roughly 30+ papers — below that use `db list` and read the titles, which is faster and better, and a frequency table over a dozen papers is meaningless; (2) the question is about the subject matter of the set AS A WHOLE, not about the individual papers. Only then does this apply: 'what are these 500 papers about', 'what themes are in this collection', 'what is this search actually covering', 'which keywords dominate', 'summarise the topics of these hundreds of papers', 'has the focus shifted over time'. Do NOT use this to list, show, count, filter, sort, tag or export papers, however phrased — that is `db list` and the scopus-for-dobby skill. Do NOT use it for citation structure, gaps, seminal works or research fronts — that is the citation-analysis skill. When in doubt, or when the user seems to want to see the papers themselves, do not use this skill."
 ---
 
 # Corpus profiling — what is this set of papers about?
@@ -36,7 +36,7 @@ scopus-for-dobby --json profile -c review             # structured (global --jso
 
 | Option | Meaning |
 |---|---|
-| `--field topics\|keywords\|subjects\|auto` | Which vocabulary. `auto` picks the best-covered and says which it chose |
+| `--field auto\|topics\|index-keywords\|author-keywords\|subjects` | Which vocabulary. `auto` picks the best-covered and says which it chose. `keywords` is accepted but ambiguous — the database has both Scopus-indexed and author-supplied keyword fields, so prefer the explicit names |
 | `--top N` | Rows per table |
 | `--terms` | Title-word and bigram frequency — the fallback when no vocabulary is present |
 | `--co-occurrence` | Label pairs appearing on the same paper |
@@ -52,9 +52,9 @@ vocabularies**, so no stemming, stopword tuning or topic modelling is involved:
 | Field | Source | Populated by |
 |---|---|---|
 | `openalex_topics` | OpenAlex topic labels (≤5/paper) | `openalex enrich` |
-| `index_keywords` | Scopus curated indexing terms | search/abstract retrieval |
+| `index_keywords` | Scopus curated indexing terms | `abstract --view FULL` (rarely present from search alone) |
 | `subject_areas` | Scopus classification | search/abstract retrieval |
-| `keywords` | Author free-text | varies |
+| `keywords` | Author free-text (`--field author-keywords`) | varies — often the only populated field |
 | `title` | always present | always |
 
 **But coverage is often low, and that changes what the numbers mean.** On a real

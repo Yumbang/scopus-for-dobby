@@ -426,10 +426,18 @@ def _print_report(skin, report: dict, top: int) -> None:
         f"{stats['seeds']} seed(s), {stats['nodes']} nodes, {stats['edges']} edges, "
         f"depth {stats['depth']}",
     )
-    if stats["unmatched_seeds"]:
-        skin.hint(f"  {len(stats['unmatched_seeds'])} seed(s) not found in OpenAlex")
-    if report["seeds_without_doi"]:
-        skin.hint(f"  {len(report['seeds_without_doi'])} seed(s) skipped (no DOI)")
+    if stats.get("coverage_from_file"):
+        # A loaded graph does not carry which seeds failed to match or lacked a
+        # DOI. Reporting 0 would be inventing a measurement.
+        skin.hint(
+            "  seed match / DOI coverage not recorded in the export — "
+            "rebuild from the collection if you need it"
+        )
+    else:
+        if stats["unmatched_seeds"]:
+            skin.hint(f"  {len(stats['unmatched_seeds'])} seed(s) not found in OpenAlex")
+        if report["seeds_without_doi"]:
+            skin.hint(f"  {len(report['seeds_without_doi'])} seed(s) skipped (no DOI)")
     # The denominator for every reference-based figure below. Silent before,
     # and on a real corpus it removed 47 of 273 seeds from all of them.
     if stats.get("seeds_without_references"):
@@ -460,7 +468,11 @@ def _print_report(skin, report: dict, top: int) -> None:
 
     if report["themes"]:
         click.echo()
-        skin.info(f"Themes ({len(report['themes'])} clusters):")
+        mod = report["themes"][0].get("modularity")
+        strength = ""
+        if isinstance(mod, (int, float)):
+            strength = f", modularity {mod:.2f}" + (" — weak split, hedge" if mod < 0.3 else "")
+        skin.info(f"Themes ({len(report['themes'])} clusters{strength}):")
         for theme in report["themes"]:
             names = ", ".join(m["label"][:40] for m in theme["representative"][:2])
             click.echo(f"  #{theme['id']} — {theme['size']} papers: {names}")
@@ -483,6 +495,15 @@ def _print_report(skin, report: dict, top: int) -> None:
             f"{shares.get('2015+', 0):.0%} from 2015+, "
             f"{shares.get('pre-1940', 0):.1%} pre-1940"
         )
+
+    if report["coupling"]:
+        click.echo()
+        skin.info("Most closely related papers (shared references — research fronts):")
+        for pair in report["coupling"][:top]:
+            click.echo(
+                f"  {pair['shared']} shared refs: {pair['source_label'][:34]} + "
+                f"{pair['target_label'][:34]}"
+            )
 
     if report["co_citation"]:
         click.echo()

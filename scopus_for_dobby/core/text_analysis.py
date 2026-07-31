@@ -28,10 +28,14 @@ from itertools import combinations
 
 # Controlled vocabularies, in the order ``auto`` prefers them when coverage ties.
 # OpenAlex topics are the most human-legible; subject areas are the coarsest.
-VOCAB_FIELDS = ("openalex_topics", "index_keywords", "subject_areas")
+# Author keywords come last: they are free text rather than a controlled
+# vocabulary, so they are noisier — but they are frequently the *only* field
+# populated, and excluding them once left an 84%-covered field unreachable
+# while `auto` reported that it had found nothing.
+VOCAB_FIELDS = ("openalex_topics", "index_keywords", "subject_areas", "keywords")
 
 # Everything worth reporting a denominator for, vocabulary or not.
-COVERAGE_FIELDS = VOCAB_FIELDS + ("keywords", "abstract", "title")
+COVERAGE_FIELDS = VOCAB_FIELDS + ("abstract", "title")
 
 # Keys a vocabulary entry may hide its label under. ``subject_areas`` arrives as
 # ``{"name", "code", "abbrev"}`` dicts while the other two are plain strings;

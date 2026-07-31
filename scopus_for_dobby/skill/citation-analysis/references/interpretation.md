@@ -71,6 +71,27 @@ Requires ≥2 seeds that actually share references. **Zero results is a real
 finding** — "your papers share no references" means the search returned
 topically unrelated work. Report it that way; it is not a failure.
 
+### Reference age
+
+Printed as `median <year>, N% from 2015+, N% pre-1940`. Measured over
+**seed → reference** edges only, so a work ten of your papers cite counts ten
+times — the question is what the corpus *reaches for*, not what happens to sit
+in the graph.
+
+The standard bibliometric read: a recent median means a fast-moving front; a
+long pre-1940 tail means the field still argues with its founding literature.
+On a 2025-26 quantum-foundations corpus this came out at median 2014, 46% from
+2015 on, 2.2% pre-1940 — a modern-citing literature with a thin historical tail.
+
+Quote it as a description of *their* corpus, not of the field.
+
+### Coupling — research fronts
+
+Pairs of the user's own papers linked by shared references. High overlap means
+two papers are working the same problem, whatever their titles suggest. This is
+the projection themes are computed from, so read it alongside them: a theme is
+a cluster in exactly this network.
+
 ### Outlier seeds
 
 Seeds sharing no references with any other seed. Usually keyword collisions
@@ -110,3 +131,20 @@ depth N", not as a broken result — but never present it as a full survey eithe
 
 The corpus is a sample of the user's making. Every finding is a statement about
 *their* search results, not about the field.
+
+## `--json` key names
+
+The report is not flat, and coverage is not where you would guess:
+
+| What you want | Where it is |
+|---|---|
+| seeds, nodes, edges, depth, truncation | `stats` |
+| seeds with no reference list | `stats.seeds_without_references` (and `seeds_with_references`, the real denominator) |
+| seeds OpenAlex could not match | `stats.unmatched_seeds` — **`null` means not recorded**, which is what a `--from-file` graph reports. It is not zero |
+| seeds lacking a DOI | top-level `seeds_without_doi` (also unavailable from a file) |
+| what the graph can support | `topology.supports` + `topology.reasons` |
+| gap ranking figure | `gap_papers[].seed_reached_by` — **not** `reached_by` |
+| cluster contents | `themes[].top_shared_references`, `themes[].members` (bounded by `--top`) |
+
+A graph loaded with `--from-file` cannot report seed-match or DOI coverage: the
+export does not carry it. The tool says so rather than emitting `0`.

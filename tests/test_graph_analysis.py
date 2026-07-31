@@ -470,3 +470,35 @@ class TestThemeComposition:
         assert "top_shared_references" in themes[0]
         assert len(themes[0]["members"]) <= 3
         assert all("label" in m for m in themes[0]["members"])
+
+
+class TestCoverageHonesty:
+    """A graph loaded from a file must not report unmeasured coverage as zero."""
+
+    def _exported(self, tmp_path):
+        from scopus_for_dobby.core import openalex as oa
+
+        g = graph(
+            [node("S1", ROLE_SEED), node("R", ROLE_FRONTIER, depth=1, reached=1)],
+            [("S1", "R")],
+        )
+        path = tmp_path / "g.json"
+        oa.write_json(g, path)
+        return oa.read_graph(path)
+
+    def test_unmatched_is_unknown_not_empty(self, tmp_path):
+        """`[]` would read as 'none were unmatched' — a claim we cannot make."""
+        stats = ga.corpus_stats(self._exported(tmp_path))
+        assert stats["unmatched_seeds"] is None
+        assert stats["coverage_from_file"] is True
+
+    def test_structural_coverage_survives_export(self, tmp_path):
+        """seeds_without_references is computable from edges, so it stays exact."""
+        stats = ga.corpus_stats(self._exported(tmp_path))
+        assert stats["seeds_without_references"] == 0
+        assert stats["seeds_with_references"] == 1
+
+    def test_built_graphs_still_report_measured_coverage(self):
+        stats = ga.corpus_stats(COUPLED)
+        assert stats["unmatched_seeds"] == []
+        assert stats["coverage_from_file"] is False

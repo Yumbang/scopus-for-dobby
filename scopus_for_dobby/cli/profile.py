@@ -21,14 +21,20 @@ _ALL = 100_000
 # CLI-facing names for the vocabulary columns.
 _FIELD_MAP = {
     "topics": "openalex_topics",
-    "keywords": "index_keywords",
+    "index-keywords": "index_keywords",
+    "author-keywords": "keywords",
     "subjects": "subject_areas",
+    # `keywords` is ambiguous — the database has both a Scopus-indexed field and
+    # an author-supplied one. Kept pointing at the indexed field for anyone who
+    # already typed it, but the explicit names above are what the docs use.
+    "keywords": "index_keywords",
 }
 
 _FIELD_TITLES = {
     "openalex_topics": "OpenAlex topics",
     "index_keywords": "Scopus index keywords",
     "subject_areas": "Scopus subject areas",
+    "keywords": "Author keywords",
 }
 
 # Below this share of the corpus, the profile describes a minority of the papers
@@ -47,7 +53,9 @@ def _pct(share: float) -> str:
 @click.option(
     "--field",
     "-f",
-    type=click.Choice(["topics", "keywords", "subjects", "auto"]),
+    type=click.Choice(
+        ["auto", "topics", "index-keywords", "author-keywords", "subjects", "keywords"]
+    ),
     default="auto",
     help="Vocabulary to profile (default: auto — the best-covered one)",
 )
