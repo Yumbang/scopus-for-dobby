@@ -93,6 +93,65 @@ def oa_enrich(collection, tag, force, limit):
         skin.hint(f"     {no_doi} article(s) skipped (no DOI)")
 
 
+def _resolve_seeds(eids, collection, tag) -> tuple[list[dict], list[str]]:
+    """Resolve a seed batch from EIDs, a collection, or a tag.
+
+    Shared by ``graph`` and ``analyze`` so the two can never disagree about
+    what "a batch of papers" means. Returns ``(seeds_with_dois, eids_without)``
+    — seeds need a DOI to be matched against OpenAlex.
+    """
+    if collection or tag:
+        seeds = db_mod.list_articles(tag=tag, collection=collection, limit=_ALL)["articles"]
+    elif eids:
+        seeds = [db_mod.get_article(e) for e in eids]
+    else:
+        raise click.UsageError("Provide article EIDs, --collection, or --tag to seed the graph.")
+
+    no_doi = [s["eid"] for s in seeds if not s.get("doi")]
+    seeds = [s for s in seeds if s.get("doi")]
+    if not seeds:
+        raise click.ClickException("None of the seed articles have a DOI.")
+    return seeds, no_doi
+
+
+def _depth_options(func):
+    """Options shared by ``graph`` and ``analyze``."""
+    for option in reversed(
+        [
+            click.option(
+                "--depth",
+                type=click.IntRange(1, oa.MAX_DEPTH),
+                default=1,
+                show_default=True,
+                help="How many expansion levels. Beyond 1, only corroborated nodes expand.",
+            ),
+            click.option(
+                "--min-reached",
+                type=int,
+                default=oa.DEFAULT_MIN_REACHED,
+                show_default=True,
+                help="Expand a node only if this many papers you hold point at it.",
+            ),
+            click.option(
+                "--max-nodes",
+                type=int,
+                default=oa.DEFAULT_MAX_NODES,
+                show_default=True,
+                help="Stop expanding past this many nodes.",
+            ),
+            click.option(
+                "--deep-direction",
+                type=click.Choice(["references", "cited-by", "both"]),
+                default="references",
+                show_default=True,
+                help="Direction for levels beyond the first (citers cost 1 request/node).",
+            ),
+        ]
+    ):
+        func = option(func)
+    return func
+
+
 @openalex.command("graph")
 @click.argument("eids", nargs=-1)
 @click.option("--collection", "-c", default=None, help="Seed from all articles in a collection")
@@ -116,8 +175,21 @@ def oa_enrich(collection, tag, force, limit):
     help="Output format (default: inferred from -o extension, else graphml)",
 )
 @click.option("--output", "-o", "out_path", default=None, help="Output file path")
+@_depth_options
 @handle_error
-def oa_graph(eids, collection, tag, direction, per_seed_limit, fmt, out_path):
+def oa_graph(
+    eids,
+    collection,
+    tag,
+    direction,
+    per_seed_limit,
+    fmt,
+    out_path,
+    depth,
+    min_reached,
+    max_nodes,
+    deep_direction,
+):
     """Export a citation graph around saved articles to a graph file.
 
     Nodes are works, a directed edge A -> B means "A cites B". The graph
@@ -133,17 +205,7 @@ def oa_graph(eids, collection, tag, direction, per_seed_limit, fmt, out_path):
 
     skin = ReplSkin()
 
-    if collection or tag:
-        seeds = db_mod.list_articles(tag=tag, collection=collection, limit=_ALL)["articles"]
-    elif eids:
-        seeds = [db_mod.get_article(e) for e in eids]
-    else:
-        raise click.UsageError("Provide article EIDs, --collection, or --tag to seed the graph.")
-
-    no_doi = [s["eid"] for s in seeds if not s.get("doi")]
-    seeds = [s for s in seeds if s.get("doi")]
-    if not seeds:
-        raise click.ClickException("None of the seed articles have a DOI.")
+    seeds, no_doi = _resolve_seeds(eids, collection, tag)
 
     # Resolve format and output path from each other.
     if fmt is None and out_path:
@@ -153,11 +215,21 @@ def oa_graph(eids, collection, tag, direction, per_seed_limit, fmt, out_path):
     out_path = out_path or f"citation_graph.{fmt}"
 
     if not state.json_output:
+        depth_note = f", depth {depth}" if depth > 1 else ""
         skin.info(
-            f"Building {direction} graph from {len(seeds)} seed(s) (limit {per_seed_limit}/seed)..."
+            f"Building {direction} graph from {len(seeds)} seed(s) "
+            f"(limit {per_seed_limit}/seed{depth_note})..."
         )
 
-    graph = oa.build_citation_graph(seeds, direction=direction, per_seed_limit=per_seed_limit)
+    graph = oa.build_citation_graph(
+        seeds,
+        direction=direction,
+        per_seed_limit=per_seed_limit,
+        depth=depth,
+        min_reached=min_reached,
+        max_nodes=max_nodes,
+        deep_direction=deep_direction,
+    )
     files = oa.GRAPH_WRITERS[fmt](graph, out_path)
 
     summary = {
@@ -166,6 +238,9 @@ def oa_graph(eids, collection, tag, direction, per_seed_limit, fmt, out_path):
         "seeds": len(seeds),
         "seeds_not_in_openalex": graph["unmatched"],
         "seeds_without_doi": no_doi,
+        "roles": graph["meta"]["roles"],
+        "depth": graph["meta"]["depth"],
+        "truncated": graph["meta"]["truncated"],
         "files": files,
     }
     if state.json_output:
@@ -179,6 +254,203 @@ def oa_graph(eids, collection, tag, direction, per_seed_limit, fmt, out_path):
         skin.hint(f"     {len(graph['unmatched'])} seed(s) not found in OpenAlex")
     if no_doi:
         skin.hint(f"     {len(no_doi)} seed(s) skipped (no DOI)")
+    if graph["meta"]["truncated"]:
+        skin.warning(
+            f"     Stopped at --max-nodes {max_nodes}: the graph is incomplete."
+        )
+
+
+@openalex.command("analyze")
+@click.argument("eids", nargs=-1)
+@click.option("--collection", "-c", default=None, help="Seed from all articles in a collection")
+@click.option("--tag", "-t", default=None, help="Seed from all articles with a tag")
+@click.option(
+    "--from-file",
+    "from_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Analyze a graph exported earlier instead of building one (no API calls).",
+)
+@click.option(
+    "--direction",
+    "-d",
+    type=click.Choice(["references", "cited-by", "both"]),
+    default="both",
+    show_default=True,
+    help="references = what seeds cite; cited-by = what cites seeds. "
+    "Matches `graph`, so the same flags give the same graph in both commands.",
+)
+@click.option("--per-seed-limit", type=int, default=200, show_default=True)
+@click.option("--top", "-n", type=int, default=10, show_default=True, help="Rows per section")
+@click.option("--communities", "want_communities", is_flag=True, help="Cluster into themes ([analysis] extra)")
+@click.option("--dry-run", is_flag=True, help="Build depth 1, then report what going deeper would cost.")
+@_depth_options
+@handle_error
+def oa_analyze(
+    eids,
+    collection,
+    tag,
+    from_file,
+    direction,
+    per_seed_limit,
+    top,
+    want_communities,
+    dry_run,
+    depth,
+    min_reached,
+    max_nodes,
+    deep_direction,
+):
+    """Explain a citation graph: what the query found, missed, and what to read.
+
+    Reports coverage, papers your corpus cites but doesn't contain, themes, and
+    the works it rests on. A graph file is optional output, not the point.
+
+    \b
+    Examples:
+      scopus-for-dobby openalex analyze --collection review
+      scopus-for-dobby openalex analyze --collection review --depth 2 --communities
+      scopus-for-dobby openalex analyze --from-file map.json --json
+      scopus-for-dobby openalex analyze --collection review --depth 3 --dry-run
+    """
+    from scopus_for_dobby.core import graph_analysis as ga
+    from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+    skin = ReplSkin()
+    no_doi: list[str] = []
+
+    if from_file:
+        graph = oa.read_graph(from_file)
+    else:
+        seeds, no_doi = _resolve_seeds(eids, collection, tag)
+        # --dry-run builds depth 1 (needed anyway, and cheap) and then projects
+        # rather than pretending to know costs without looking.
+        build_depth = 1 if dry_run else depth
+        if not state.json_output:
+            skin.info(f"Building graph from {len(seeds)} seed(s), depth {build_depth}...")
+        graph = oa.build_citation_graph(
+            seeds,
+            direction=direction,
+            per_seed_limit=per_seed_limit,
+            depth=build_depth,
+            min_reached=min_reached,
+            max_nodes=max_nodes,
+            deep_direction=deep_direction,
+        )
+
+    if dry_run and not from_file:
+        plan = oa.plan_expansion(graph, depth=depth, min_reached=min_reached)
+        if state.json_output:
+            output(plan)
+            return
+        skin.status("Current", f"depth {plan['current_depth']}, {plan['current_nodes']} nodes")
+        skin.status("Avg refs/node", str(plan["avg_references_per_node"]))
+        for level in plan["levels"]:
+            kind = "exact" if level["exact"] else "projected"
+            click.echo(
+                f"  depth {level['level']}: expand {level['expanding']} node(s) "
+                f"-> ~{level['estimated_new_nodes']} new nodes, "
+                f"~{level['estimated_requests']} request(s)  [{kind}]"
+            )
+        click.echo(f"  projected total: ~{plan['projected_total_nodes']} nodes")
+        return
+
+    topology = ga.describe_topology(graph)
+    stats = ga.corpus_stats(graph)
+    known = [n.get("doi") for n in graph["nodes"].values() if n.get("is_seed")]
+    gaps = ga.gap_papers(graph, known_dois=known, limit=top)
+    coupling = ga.bibliographic_coupling(graph) if topology["supports"]["coupling"] else []
+    cocited = ga.co_citation(graph) if topology["supports"]["co_citation"] else []
+    outliers = ga.outlier_seeds(graph) if topology["supports"]["coupling"] else []
+
+    themes = []
+    community_error = None
+    if want_communities:
+        try:
+            themes = ga.communities(coupling)
+        except ga.AnalysisUnsupported as e:
+            community_error = str(e)
+
+    report = {
+        "topology": topology,
+        "stats": stats,
+        "seeds_without_doi": no_doi,
+        "gap_papers": gaps,
+        "coupling": coupling[:top],
+        "co_citation": cocited[:top],
+        "outlier_seeds": outliers,
+        "themes": themes,
+    }
+    if community_error:
+        report["communities_error"] = community_error
+
+    if state.json_output:
+        output(report)
+        return
+
+    _print_report(skin, report, top)
+
+
+def _print_report(skin, report: dict, top: int) -> None:
+    """Human output: findings first, caveats attached to what they qualify."""
+    stats, topology = report["stats"], report["topology"]
+
+    skin.status(
+        "Corpus",
+        f"{stats['seeds']} seed(s), {stats['nodes']} nodes, {stats['edges']} edges, "
+        f"depth {stats['depth']}",
+    )
+    if stats["unmatched_seeds"]:
+        skin.hint(f"  {len(stats['unmatched_seeds'])} seed(s) not found in OpenAlex")
+    if report["seeds_without_doi"]:
+        skin.hint(f"  {len(report['seeds_without_doi'])} seed(s) skipped (no DOI)")
+    if stats["truncated"]:
+        skin.warning("  Graph was truncated at --max-nodes: findings are partial.")
+
+    if report["gap_papers"]:
+        click.echo()
+        skin.info("Papers your corpus cites but does not contain:")
+        for row in report["gap_papers"]:
+            year = row["year"] or "n.d."
+            click.echo(
+                f"  [{row['reached_by']}x] {row['label'][:70]} ({year}) "
+                f"— {row['cited_by_count']} citations"
+            )
+            if row["doi"]:
+                click.echo(f"           doi:{row['doi']}")
+
+    if report["themes"]:
+        click.echo()
+        skin.info(f"Themes ({len(report['themes'])} clusters):")
+        for theme in report["themes"]:
+            names = ", ".join(m["label"][:40] for m in theme["representative"][:2])
+            click.echo(f"  #{theme['id']} — {theme['size']} papers: {names}")
+    elif report.get("communities_error"):
+        click.echo()
+        skin.warning(report["communities_error"])
+
+    if report["co_citation"]:
+        click.echo()
+        skin.info("Most co-cited works (the corpus's shared foundation):")
+        for pair in report["co_citation"][:top]:
+            click.echo(
+                f"  {pair['shared']}x together: {pair['source_label'][:34]} + "
+                f"{pair['target_label'][:34]}"
+            )
+
+    if report["outlier_seeds"]:
+        click.echo()
+        skin.warning("Seeds sharing no references with the rest (possibly off-topic):")
+        for row in report["outlier_seeds"]:
+            click.echo(f"  {row['label'][:70]}")
+
+    unsupported = [k for k, ok in topology["supports"].items() if not ok]
+    if unsupported:
+        click.echo()
+        for key in unsupported:
+            reason = topology["reasons"].get(key)
+            if reason:
+                skin.hint(f"{key}: {reason}")
 
 
 @openalex.command("email")

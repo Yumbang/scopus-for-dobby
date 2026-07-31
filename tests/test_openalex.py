@@ -306,11 +306,18 @@ class TestGraphWriters:
         assert "S1,R1" in edges_csv
 
     def test_json_node_link(self, tmp_path):
+        """Edges are keyed `edges`, not the historical `links`.
+
+        networkx 3.6 made `edges` the default, so a file using `links` makes
+        the call people actually write — `node_link_graph(json.load(f))` —
+        raise KeyError. `read_graph` still accepts either key.
+        """
         files = oa.write_json(self.GRAPH, tmp_path / "g.json")
         data = json.loads((tmp_path / "g.json").read_text())
         assert data["directed"] is True
         assert {n["id"] for n in data["nodes"]} == {"S1", "R1"}
-        assert data["links"] == [{"source": "S1", "target": "R1"}]
+        assert data["edges"] == [{"source": "S1", "target": "R1"}]
+        assert "links" not in data
         assert files == [str(tmp_path / "g.json")]
 
 

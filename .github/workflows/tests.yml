@@ -63,15 +63,15 @@ jobs:
           uv venv --clear
           uv pip install -e . pytest
 
-      - name: Assert the daemon stack really is absent
+      - name: Assert the optional stacks really are absent
         run: |
           uv run python - <<'PY'
           import importlib.util as u, sys
-          leaked = [m for m in ("fastapi", "uvicorn", "httpx", "starlette")
+          leaked = [m for m in ("fastapi", "uvicorn", "httpx", "starlette", "networkx")
                     if u.find_spec(m) is not None]
           if leaked:
-              sys.exit(f"[gui] deps leaked into a CLI-only install: {leaked}")
-          print("clean: no daemon stack installed")
+              sys.exit(f"optional deps leaked into a bare install: {leaked}")
+          print("clean: no daemon or analysis stack installed")
           PY
 
       - name: Tests (in-process backend)
@@ -85,6 +85,40 @@ jobs:
           # No daemon may have been spawned along the way.
           test ! -e "$HOME/.scopus-for-dobby/daemon.pid" \
             || (echo "a daemon was spawned by a plain CLI command" && exit 1)
+
+      - name: Analysis works without the [analysis] extra
+        # Only --communities needs networkx; everything else is stdlib set
+        # arithmetic and must keep working on a bare install.
+        run: |
+          uv run python - <<'PY'
+          import json, subprocess, sys, tempfile, pathlib
+          from scopus_for_dobby.core import openalex as oa
+          graph = {
+              "nodes": {
+                  "S1": {"id": "S1", "label": "Seed 1", "year": 2020, "doi": "10.1/s1",
+                         "cited_by_count": 5, "is_seed": True, "role": "seed",
+                         "depth": 0, "reached_by": 0},
+                  "S2": {"id": "S2", "label": "Seed 2", "year": 2020, "doi": "10.1/s2",
+                         "cited_by_count": 5, "is_seed": True, "role": "seed",
+                         "depth": 0, "reached_by": 0},
+                  "A": {"id": "A", "label": "Shared ref", "year": 2015, "doi": "10.1/a",
+                        "cited_by_count": 900, "is_seed": False, "role": "frontier",
+                        "depth": 1, "reached_by": 2},
+              },
+              "edges": [("S1", "A"), ("S2", "A")],
+              "unmatched": [], "meta": {"depth": 1, "direction": "references"},
+          }
+          path = pathlib.Path(tempfile.mkdtemp()) / "g.json"
+          oa.write_json(graph, path)
+          out = subprocess.run(
+              [sys.executable, "-m", "scopus_for_dobby.cli", "--json",
+               "openalex", "analyze", "--from-file", str(path)],
+              capture_output=True, text=True, check=True).stdout
+          report = json.loads(out)
+          assert report["gap_papers"][0]["id"] == "A", report["gap_papers"]
+          assert report["coupling"][0]["shared"] == 1, report["coupling"]
+          print("analyze works without networkx")
+          PY
 
   skill-packaging:
     # `skill install` reads files shipped as package-data. A missing glob in
@@ -113,17 +147,22 @@ jobs:
           uv build --wheel -o dist
           uv pip install dist/*.whl
 
-      - name: Install the skill from the wheel
+      - name: Install the skills from the wheel
         run: |
           mkdir -p "$RUNNER_TEMP/elsewhere"
           cd "$RUNNER_TEMP/elsewhere"
           CLI="$GITHUB_WORKSPACE/.venv/bin/scopus-for-dobby"
           "$CLI" skill list
           "$CLI" skill install
-          test -f "$HOME/.claude/skills/scopus-for-dobby/SKILL.md" \
-            || (echo "SKILL.md missing — package-data glob is wrong" && exit 1)
-          test -n "$(ls "$HOME/.claude/skills/scopus-for-dobby/references/"*.md)" \
-            || (echo "references/ missing from the wheel" && exit 1)
+          # Every registered skill must have survived the wheel build.
+          for skill in $("$CLI" --json skill list | python -c \
+                'import json,sys; print(" ".join(s["skill"] for s in json.load(sys.stdin)["skills"]))'); do
+            test -f "$HOME/.claude/skills/$skill/SKILL.md" \
+              || (echo "$skill: SKILL.md missing — package-data glob is wrong" && exit 1)
+            test -n "$(ls "$HOME/.claude/skills/$skill/references/"*.md)" \
+              || (echo "$skill: references/ missing from the wheel" && exit 1)
+            echo "ok: $skill"
+          done
           "$CLI" skill install agents --project
           test -f AGENTS.md || (echo "AGENTS.md pointer not written" && exit 1)
 

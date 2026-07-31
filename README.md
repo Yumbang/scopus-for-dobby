@@ -43,19 +43,26 @@ scopus-for-dobby
 
 ## Use with an AI agent
 
-The CLI ships an **agent skill** — the Scopus query syntax, the stateful library
-model, OpenAlex enrichment, and the failure modes — so an agent drives it
-correctly instead of guessing at flags. Install it with the CLI itself:
+The CLI ships **agent skills** — the Scopus query syntax, the stateful library
+model, OpenAlex enrichment, the failure modes, and how to read a citation graph
+— so an agent drives it correctly instead of guessing at flags. Install them
+with the CLI itself:
 
 ```bash
 # 1. The CLI (the binary dependency)
 uv tool install --editable .
 
-# 2. The skill, for whichever agent you use
+# 2. The skills, for whichever agent you use
 scopus-for-dobby skill install                    # Claude Code, all projects
 scopus-for-dobby skill install claude --project   # just this repo
 scopus-for-dobby skill install agents --project   # Codex, Cursor, Zed, Aider…
+scopus-for-dobby skill install --skill citation-analysis   # just one
 ```
+
+| Skill | Teaches |
+|---|---|
+| `scopus-for-dobby` | Driving the CLI: query syntax, the stateful library model, collections, enrichment, export |
+| `citation-analysis` | Reading a citation graph: what a search found, what it missed, what to read next |
 
 ```bash
 scopus-for-dobby skill list        # every target and where it installs
@@ -100,10 +107,40 @@ Because the skill is packaged with the code, upgrading the CLI and re-running
 | `collection` | `create` / `delete` | Manage named collections |
 | `collection` | `add` / `remove` | Add/remove articles from collections |
 | `openalex` | `enrich` | Add open-access links, OA status, and OpenAlex citation counts (free, keyless) |
-| `openalex` | `graph` | Build citation graphs → GraphML / Gephi CSV / node-link JSON |
+| `openalex` | `graph` | Build citation graphs (`--depth 1..3`) → GraphML / Gephi CSV / node-link JSON |
+| `openalex` | `analyze` | Interpret a graph: gaps, themes, foundations, off-topic seeds (see below) |
 | `export` | | Export to XLSX, BibTeX, or RIS |
 | `skill` | `install` / `list` / `path` | Install the bundled agent skill (see [Use with an AI agent](#use-with-an-ai-agent)) |
 | `serve` | | Run the local HTTP daemon (for the macOS GUI / multi-process access) |
+
+### `openalex analyze` — what your search found, and missed
+
+```bash
+scopus-for-dobby openalex analyze --collection review              # depth 1
+scopus-for-dobby openalex analyze --collection review --depth 2 --communities
+scopus-for-dobby openalex analyze --collection review --depth 3 --dry-run
+scopus-for-dobby openalex analyze --from-file map.json --json      # no API calls
+```
+
+Reports, in order of usefulness: **coverage**, **gap papers** (highly cited
+work your corpus repeatedly cites but does not contain), **themes**,
+**foundations** (most co-cited works), and **outlier seeds** (likely off-topic
+results). Nothing is written to the database.
+
+`--depth 2..3` expands past the seeds' immediate neighbours. Beyond level 1
+only *corroborated* nodes expand — those at least `--min-reached` (default 2)
+of your own papers point at — which keeps the graph on-topic and affordable:
+works carry ~35–50 references each, so ungated expansion reaches millions of
+nodes by depth 3. Every node carries `role` (`seed` / `expanded` / `frontier`),
+`depth`, and `reached_by`.
+
+That role matters for honesty: a depth-1 graph is a *star* (edges only
+seed→reference and citer→seed), so PageRank and betweenness on it describe the
+crawl rather than the literature. `analyze` refuses those measures and says
+why, reporting bibliographic coupling and co-citation instead.
+
+`--communities` needs the optional `analysis` extra:
+`uv tool install --editable ".[analysis]"`.
 
 ### `serve` — HTTP daemon
 

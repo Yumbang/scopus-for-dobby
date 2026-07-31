@@ -18,7 +18,9 @@ import csv
 import json
 import logging
 import time
+from collections import Counter
 from pathlib import Path
+from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 import requests
@@ -202,21 +204,57 @@ def normalize_enrichment(work: dict) -> dict:
 # ── Citation graph ────────────────────────────────────────────────────────────
 
 
+#: Node roles. ``frontier`` nodes were never expanded, so their edge lists are
+#: truncated by where we stopped — structural metrics must exclude them.
+ROLE_SEED = "seed"
+ROLE_EXPANDED = "expanded"
+ROLE_FRONTIER = "frontier"
+
+MAX_DEPTH = 3
+DEFAULT_MAX_NODES = 5000
+DEFAULT_MIN_REACHED = 2
+
+
+def _wants(direction: str, kind: str) -> bool:
+    return direction in (kind, "both")
+
+
 def build_citation_graph(
     seeds: list[dict],
     *,
     direction: str = "both",
     per_seed_limit: int = 200,
+    depth: int = 1,
+    min_reached: int = DEFAULT_MIN_REACHED,
+    max_nodes: int = DEFAULT_MAX_NODES,
+    deep_direction: str = "references",
     on_progress=None,
 ) -> dict:
     """Build a citation graph around ``seeds`` (local article dicts with DOIs).
 
     Nodes are OpenAlex works; a directed edge A → B means "A cites B".
-    ``direction``: ``references`` (what seeds cite), ``cited-by`` (what
-    cites seeds), or ``both``. Returns ``{"nodes": {short_id: attrs},
-    "edges": [(src, dst), ...], "unmatched": [seed eids]}`` — held fully
-    in memory, never written to DuckDB.
+
+    ``depth`` (1–3) controls how far the neighbourhood is expanded. Depth 1 is
+    the seeds' immediate references/citers — a star, with no edges among
+    non-seed nodes. Beyond that, expansion is **relevance-gated**: a node is
+    expanded at the next level only when at least ``min_reached`` papers we
+    already hold point at it. Without that gate the frontier grows by ~35× per
+    level (millions of nodes by depth 3); with it, the graph stays on-topic and
+    the gate count doubles as the "this matters to your corpus" signal.
+
+    ``deep_direction`` applies to levels beyond the first, defaulting to
+    references only: citers cost one paginated request *per node*, while
+    references arrive 50 at a time.
+
+    Every node carries ``role`` (seed / expanded / frontier), ``depth``, and
+    ``reached_by``. Frontier nodes have deliberately incomplete edges.
+
+    Returns ``{"nodes": {short_id: attrs}, "edges": [(src, dst), ...],
+    "unmatched": [...], "meta": {...}}`` — held in memory, never written to
+    DuckDB.
     """
+    depth = max(1, min(int(depth), MAX_DEPTH))
+
     seed_by_doi: dict[str, dict] = {}
     for s in seeds:
         d = normalize_doi(s.get("doi"))
@@ -227,79 +265,209 @@ def build_citation_graph(
 
     nodes: dict[str, dict] = {}
     edges: set[tuple[str, str]] = set()
+    reached: dict[str, set[str]] = {}
+    refs_cache: dict[str, list[str]] = {}
+    expanded: set[str] = set()
+    truncated = False
 
-    def _add_node(work: dict, *, is_seed: bool = False) -> str | None:
+    def _stub(sid: str, level: int) -> dict:
+        return {
+            "id": sid,
+            "label": sid,
+            "year": None,
+            "doi": "",
+            "cited_by_count": 0,
+            "is_seed": False,
+            "role": ROLE_FRONTIER,
+            "depth": level,
+            "reached_by": 0,
+        }
+
+    def _fill(sid: str, work: dict) -> None:
+        node = nodes[sid]
+        node["label"] = work.get("display_name") or node["label"]
+        node["year"] = work.get("publication_year")
+        node["doi"] = normalize_doi(work.get("doi")) or ""
+        node["cited_by_count"] = work.get("cited_by_count") or 0
+
+    def _touch(sid: str, level: int, by: str | None = None) -> None:
+        if sid not in nodes:
+            nodes[sid] = _stub(sid, level)
+        if by:
+            reached.setdefault(sid, set()).add(by)
+
+    def _cache_refs(sid: str, work: dict) -> None:
+        refs_cache[sid] = [
+            r for r in (_short_id(x) for x in work.get("referenced_works") or []) if r
+        ]
+
+    # ── depth 0: the user's batch ────────────────────────────────────────────
+    for work in works.values():
         sid = _short_id(work.get("id"))
         if not sid:
-            return None
-        existing = nodes.get(sid)
-        if existing:
-            existing["is_seed"] = existing["is_seed"] or is_seed
-            return sid
-        nodes[sid] = {
-            "id": sid,
-            "label": work.get("display_name") or "",
-            "year": work.get("publication_year"),
-            "doi": normalize_doi(work.get("doi")) or "",
-            "cited_by_count": work.get("cited_by_count") or 0,
-            "is_seed": is_seed,
-        }
-        return sid
+            continue
+        _touch(sid, 0)
+        _fill(sid, work)
+        nodes[sid].update({"is_seed": True, "role": ROLE_SEED, "depth": 0})
+        _cache_refs(sid, work)
 
-    seed_works: dict[str, dict] = {}
-    for work in works.values():
-        sid = _add_node(work, is_seed=True)
-        if sid:
-            seed_works[sid] = work
+    # ── levels 1..depth ──────────────────────────────────────────────────────
+    for level in range(1, depth + 1):
+        if level == 1:
+            # Seeds are the user's own selection — no gate applies to them.
+            to_expand = [s for s, n in nodes.items() if n["depth"] == 0]
+        else:
+            # Any node the corpus has corroborated and that we have not
+            # expanded yet — deliberately NOT restricted to nodes first seen at
+            # the previous level. A paper can be seen once at depth 1 and only
+            # become corroborated when a depth-2 node also cites it; keying on
+            # first-seen depth would skip it forever.
+            to_expand = [
+                s
+                for s in nodes
+                if s not in expanded and len(reached.get(s, ())) >= min_reached
+            ]
+        if not to_expand:
+            break
 
-    refs_to_resolve: set[str] = set()
-    for done, (sid, work) in enumerate(seed_works.items(), 1):
-        if direction in ("references", "both"):
-            refs = [r for r in (_short_id(x) for x in work.get("referenced_works") or []) if r]
-            for ref in refs[:per_seed_limit]:
-                edges.add((sid, ref))
-                if ref not in nodes:
-                    refs_to_resolve.add(ref)
-        if direction in ("cited-by", "both"):
-            for citer in fetch_citing_works(sid, limit=per_seed_limit):
-                cid = _add_node(citer)
-                if cid:
+        level_direction = direction if level == 1 else deep_direction
+        pending_meta: set[str] = set()
+
+        for done, sid in enumerate(to_expand, 1):
+            if _wants(level_direction, "references"):
+                for ref in refs_cache.get(sid, [])[:per_seed_limit]:
+                    edges.add((sid, ref))
+                    _touch(ref, level, by=sid)
+                    if ref not in expanded and not nodes[ref].get("_filled"):
+                        pending_meta.add(ref)
+            if _wants(level_direction, "cited-by"):
+                for citer in fetch_citing_works(sid, limit=per_seed_limit):
+                    cid = _short_id(citer.get("id"))
+                    if not cid:
+                        continue
+                    _touch(cid, level, by=sid)
+                    _fill(cid, citer)
+                    nodes[cid]["_filled"] = True
                     edges.add((cid, sid))
-        if on_progress:
-            on_progress(done, len(seed_works))
 
-    # Referenced works are listed by ID only — resolve their metadata in
-    # batches. Works OpenAlex has deleted/merged keep a stub node so the
-    # edge list stays consistent.
-    if refs_to_resolve:
-        for work in fetch_works_by_ids(refs_to_resolve).values():
-            _add_node(work)
-        for missing in refs_to_resolve - set(nodes):
-            nodes[missing] = {
-                "id": missing,
-                "label": missing,
-                "year": None,
-                "doi": "",
-                "cited_by_count": 0,
-                "is_seed": False,
+            expanded.add(sid)
+            if nodes[sid]["role"] != ROLE_SEED:
+                nodes[sid]["role"] = ROLE_EXPANDED
+            if on_progress:
+                on_progress(done, len(to_expand))
+            if len(nodes) >= max_nodes:
+                truncated = True
+                break
+
+        # Referenced works arrive as bare IDs — resolve metadata in batches.
+        # Pull `referenced_works` too when another level might expand them.
+        if pending_meta:
+            select = _GRAPH_SELECT + (",referenced_works" if level < depth else "")
+            for sid, work in fetch_works_by_ids(pending_meta, select=select).items():
+                if sid in nodes:
+                    _fill(sid, work)
+                    nodes[sid]["_filled"] = True
+                    if level < depth:
+                        _cache_refs(sid, work)
+
+        if truncated:
+            break
+
+    for sid, node in nodes.items():
+        node["reached_by"] = len(reached.get(sid, ()))
+        node.pop("_filled", None)
+
+    roles = Counter(n["role"] for n in nodes.values())
+    return {
+        "nodes": nodes,
+        "edges": sorted(edges),
+        "unmatched": unmatched,
+        "meta": {
+            "depth": depth,
+            "direction": direction,
+            "deep_direction": deep_direction if depth > 1 else None,
+            "min_reached": min_reached,
+            "per_seed_limit": per_seed_limit,
+            "max_nodes": max_nodes,
+            "truncated": truncated,
+            "roles": dict(roles),
+        },
+    }
+
+
+def plan_expansion(graph: dict, *, depth: int, min_reached: int = DEFAULT_MIN_REACHED) -> dict:
+    """Project the cost of expanding ``graph`` further, without fetching.
+
+    Honest about its limits: the level immediately after the graph's current
+    depth is counted exactly (those nodes and their reach are known), and
+    anything past that is a projection using the observed average fan-out.
+    """
+    nodes = graph["nodes"]
+    current = graph.get("meta", {}).get("depth", 1)
+    refs_per_node = _avg_fanout(graph)
+
+    gated = [
+        s
+        for s, n in nodes.items()
+        if n["depth"] == current and n["role"] == ROLE_FRONTIER and n["reached_by"] >= min_reached
+    ]
+    levels = []
+    projected_nodes = len(nodes)
+    expanding = len(gated)
+    for level in range(current + 1, depth + 1):
+        new_nodes = int(expanding * refs_per_node)
+        levels.append(
+            {
+                "level": level,
+                "expanding": expanding,
+                "estimated_new_nodes": new_nodes,
+                "estimated_requests": -(-expanding * int(refs_per_node) // _BATCH) or 1,
+                "exact": level == current + 1,
             }
+        )
+        projected_nodes += new_nodes
+        # Past the first projected level, assume the same share clears the gate.
+        expanding = max(1, int(new_nodes * (len(gated) / max(len(nodes), 1))))
+    return {
+        "current_depth": current,
+        "current_nodes": len(nodes),
+        "target_depth": depth,
+        "avg_references_per_node": round(refs_per_node, 1),
+        "levels": levels,
+        "projected_total_nodes": projected_nodes,
+    }
 
-    return {"nodes": nodes, "edges": sorted(edges), "unmatched": unmatched}
+
+def _avg_fanout(graph: dict) -> float:
+    """Mean out-degree over nodes that were actually expanded."""
+    expanded = {s for s, n in graph["nodes"].items() if n["role"] in (ROLE_SEED, ROLE_EXPANDED)}
+    if not expanded:
+        return 0.0
+    out = Counter(s for s, _ in graph["edges"] if s in expanded)
+    return sum(out.values()) / len(expanded) if out else 0.0
 
 
 # ── Graph writers ─────────────────────────────────────────────────────────────
 
 
+#: Node attributes written to every format, in order. ``is_seed`` predates
+#: roles and is kept so existing Gephi workflows and older exports still work.
+NODE_KEYS: tuple[tuple[str, str], ...] = (
+    ("label", "string"),
+    ("year", "int"),
+    ("doi", "string"),
+    ("cited_by_count", "int"),
+    ("is_seed", "boolean"),
+    ("role", "string"),
+    ("depth", "int"),
+    ("reached_by", "int"),
+)
+
+
 def write_graphml(graph: dict, path: str | Path) -> list[str]:
     """Write the graph as directed GraphML (Gephi/Cytoscape/networkx)."""
     path = Path(path)
-    keys = [
-        ("label", "string"),
-        ("year", "int"),
-        ("doi", "string"),
-        ("cited_by_count", "int"),
-        ("is_seed", "boolean"),
-    ]
+    keys = list(NODE_KEYS)
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">',
@@ -330,19 +498,17 @@ def write_csv(graph: dict, path: str | Path) -> list[str]:
     path = Path(path)
     nodes_path = path.with_name(f"{path.stem}_nodes.csv")
     edges_path = path.with_name(f"{path.stem}_edges.csv")
+    extra = [name for name, _ in NODE_KEYS if name not in ("label",)]
     with open(nodes_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         # Gephi expects an ``Id``/``Label`` header on the nodes table.
-        writer.writerow(["Id", "Label", "year", "doi", "cited_by_count", "is_seed"])
+        writer.writerow(["Id", "Label", *extra])
         for sid, attrs in sorted(graph["nodes"].items()):
             writer.writerow(
                 [
                     sid,
                     attrs.get("label", ""),
-                    attrs.get("year") or "",
-                    attrs.get("doi", ""),
-                    attrs.get("cited_by_count", 0),
-                    attrs.get("is_seed", False),
+                    *(attrs.get(name, "") if attrs.get(name) is not None else "" for name in extra),
                 ]
             )
     with open(edges_path, "w", newline="", encoding="utf-8") as f:
@@ -353,17 +519,100 @@ def write_csv(graph: dict, path: str | Path) -> list[str]:
 
 
 def write_json(graph: dict, path: str | Path) -> list[str]:
-    """Write node-link JSON loadable via ``networkx.node_link_graph``."""
+    """Write node-link JSON loadable via ``networkx.node_link_graph``.
+
+    The edge list is keyed ``edges``, not the historical ``links``: networkx
+    3.6 made ``edges`` the default, so ``node_link_graph(json.load(f))`` — the
+    call everyone actually writes — raises ``KeyError: 'edges'`` on a file
+    using the old key. ``read_graph`` still accepts either, so graphs exported
+    by older versions keep loading.
+    """
     path = Path(path)
     payload = {
         "directed": True,
         "multigraph": False,
-        "graph": {},
+        "graph": dict(graph.get("meta") or {}),
         "nodes": [dict(attrs) for _, attrs in sorted(graph["nodes"].items())],
-        "links": [{"source": s, "target": t} for s, t in graph["edges"]],
+        "edges": [{"source": s, "target": t} for s, t in graph["edges"]],
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return [str(path)]
 
 
 GRAPH_WRITERS = {"graphml": write_graphml, "csv": write_csv, "json": write_json}
+
+
+# ── Graph readers ─────────────────────────────────────────────────────────────
+#
+# Analysis needs to run on a graph that was exported earlier, otherwise every
+# look at the same corpus re-spends API calls.
+
+_INT_KEYS = {"year", "cited_by_count", "depth", "reached_by"}
+
+
+def _coerce(attrs: dict) -> dict:
+    """Restore attribute types lost to text formats."""
+    out = dict(attrs)
+    for key in _INT_KEYS:
+        value = out.get(key)
+        if isinstance(value, str):
+            out[key] = int(value) if value.strip().lstrip("-").isdigit() else None
+    seed = out.get("is_seed")
+    if isinstance(seed, str):
+        out["is_seed"] = seed.strip().lower() in ("true", "1", "yes")
+    out.setdefault("role", ROLE_SEED if out.get("is_seed") else ROLE_FRONTIER)
+    out.setdefault("depth", 0 if out.get("is_seed") else 1)
+    out.setdefault("reached_by", 0)
+    return out
+
+
+def read_json_graph(path: str | Path) -> dict:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    nodes = {n["id"]: _coerce(n) for n in payload.get("nodes", [])}
+    links = payload.get("links") or payload.get("edges") or []
+    edges = sorted((link["source"], link["target"]) for link in links)
+    return {"nodes": nodes, "edges": edges, "unmatched": [], "meta": payload.get("graph") or {}}
+
+
+def read_graphml(path: str | Path) -> dict:
+    ns = "{http://graphml.graphdrawing.org/xmlns}"
+    # S314: the input is a graph file the user exported locally with
+    # `openalex graph`, on a single-user personal tool — not network input.
+    # Not worth a defusedxml dependency for one reader; revisit if graphs ever
+    # arrive from an untrusted source.
+    root = ElementTree.parse(str(path)).getroot()  # noqa: S314
+    graph_el = root.find(f"{ns}graph")
+    if graph_el is None:
+        raise ValueError(f"No <graph> element in {path}")
+    nodes: dict[str, dict] = {}
+    for node_el in graph_el.findall(f"{ns}node"):
+        sid = node_el.get("id")
+        attrs = {"id": sid}
+        for data in node_el.findall(f"{ns}data"):
+            attrs[data.get("key")] = data.text
+        nodes[sid] = _coerce(attrs)
+    edges = sorted(
+        (e.get("source"), e.get("target")) for e in graph_el.findall(f"{ns}edge")
+    )
+    return {"nodes": nodes, "edges": edges, "unmatched": [], "meta": {}}
+
+
+GRAPH_READERS = {"graphml": read_graphml, "json": read_json_graph}
+
+
+def read_graph(path: str | Path) -> dict:
+    """Load a graph written by ``GRAPH_WRITERS``, inferring format from suffix.
+
+    The CSV writer emits two files rather than one, so it is export-only;
+    round-tripping uses GraphML or JSON.
+    """
+    path = Path(path)
+    suffix = path.suffix.lstrip(".").lower()
+    try:
+        reader = GRAPH_READERS[suffix]
+    except KeyError:
+        raise ValueError(
+            f"Cannot read {path.name}: expected one of "
+            f"{', '.join(sorted(GRAPH_READERS))} (CSV export is write-only)."
+        ) from None
+    return reader(path)

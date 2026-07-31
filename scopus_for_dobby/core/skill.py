@@ -78,6 +78,13 @@ SKILLS: dict[str, Skill] = {
             "collections and tags, OpenAlex enrichment, and export."
         ),
     ),
+    "citation-analysis": Skill(
+        name="citation-analysis",
+        summary=(
+            "Reading a citation graph: what a search found, what it missed, and "
+            "what to read next — plus which metrics the graph's shape supports."
+        ),
+    ),
 }
 
 #: Back-compat for callers that assumed a single skill.

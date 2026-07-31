@@ -39,13 +39,25 @@ Extras: `gui` is the only meaningful one (the HTTP daemon — `fastapi`, `uvicor
 
 The project default is **3.14**, pinned in `.python-version` — that is what `uv venv` and `uv run` select. `requires-python` stays at `>=3.10`, which is a supported floor rather than a target: CI runs the suite on both ends. `[tool.ruff] target-version` tracks the **floor** (`py310`) so pyupgrade never rewrites code into syntax 3.10 cannot parse; raise the two together or not at all.
 
-## Agent skill
+## Agent skills
 
-`scopus_for_dobby/skill/` is the agent-facing documentation, shipped as package data (declared in `[tool.setuptools.package-data]`) and installed by `scopus-for-dobby skill install`. Targets live in `core/skill.py::TARGETS`; adding an agent is one entry there.
+`scopus_for_dobby/skill/<name>/` holds the agent-facing documentation, shipped as package data (`skill/*/SKILL.md`, `skill/*/references/*.md`) and installed by `scopus-for-dobby skill install`. Two registries in `core/skill.py`: `SKILLS` (what ships) and `TARGETS` (which agents, where). Adding either is one entry.
 
-Because it ships with the code, **the skill is part of the change**: any edit to CLI behavior, install extras, or the daemon model must update `skill/SKILL.md` and `skill/references/` in the same commit. The out-of-repo copy this replaced drifted badly — it documented the removed lazy-spawn daemon for weeks.
+- `scopus-for-dobby` — driving the CLI
+- `citation-analysis` — reading a citation graph
+
+Because they ship with the code, **the skills are part of the change**: any edit to CLI behavior, install extras, or the daemon model must update the relevant `SKILL.md` and `references/` in the same commit. The out-of-repo copy this replaced drifted badly — it documented the removed lazy-spawn daemon for weeks.
 
 `evals/` beside a skill is development material: excluded from both the wheel and the install, so editable and wheel installs produce identical agent directories.
+
+## Citation graph analysis
+
+`core/openalex.py` builds graphs (`build_citation_graph`, `--depth 1..3`); `core/graph_analysis.py` interprets them; `cli/openalex.py::analyze` presents them. Nothing is persisted to DuckDB — graphs live in memory and in files, so this works on any database.
+
+Two invariants worth preserving:
+
+- **Beyond depth 1, expansion is relevance-gated** (`min_reached`). Ungated, ~35–50 references per work means millions of nodes at depth 3.
+- **Structural metrics may only see `seed`/`expanded` nodes.** A `frontier` node's missing edges are an artifact of where expansion stopped. A depth-1 graph is a star, so centrality on it is degenerate — `describe_topology()` is what refuses it, and the refusal is reported to the user rather than silently dropped.
 
 ## Security
 

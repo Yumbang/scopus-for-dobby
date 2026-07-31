@@ -262,3 +262,51 @@ class TestListAndPath:
         for name in skill_mod.SKILLS:
             assert name in result.output
 
+
+class TestMultipleSkills:
+    """Two skills must coexist without trampling each other."""
+
+    def test_each_skill_gets_its_own_directory(self, home, runner):
+        fake_home, _ = home
+        runner.invoke(root_cli, ["skill", "install"])
+        for name in skill_mod.SKILLS:
+            assert (fake_home / ".claude/skills" / name / "SKILL.md").is_file()
+
+    def test_agents_md_holds_one_block_per_skill(self, home, runner):
+        _, project = home
+        runner.invoke(root_cli, ["skill", "install", "agents", "--project"])
+        body = (project / "AGENTS.md").read_text()
+        for name in skill_mod.SKILLS:
+            assert body.count(f"BEGIN {name} skill") == 1
+
+    def test_repeated_installs_do_not_duplicate_either_block(self, home, runner):
+        _, project = home
+        for _ in range(3):
+            runner.invoke(root_cli, ["skill", "install", "agents", "--project"])
+        body = (project / "AGENTS.md").read_text()
+        for name in skill_mod.SKILLS:
+            assert body.count(f"BEGIN {name} skill") == 1
+
+    def test_installing_one_leaves_the_others_block_alone(self, home, runner):
+        _, project = home
+        runner.invoke(root_cli, ["skill", "install", "agents", "--project"])
+        runner.invoke(
+            root_cli,
+            ["skill", "install", "agents", "--project", "--skill", SKILL],
+        )
+        body = (project / "AGENTS.md").read_text()
+        # Re-installing one skill must not remove the other's section.
+        for name in skill_mod.SKILLS:
+            assert f"BEGIN {name} skill" in body
+
+    def test_skill_descriptions_do_not_collide(self):
+        """Overlapping trigger text makes the wrong skill load."""
+        descriptions = {}
+        for name, skill in skill_mod.SKILLS.items():
+            front = (skill.src / "SKILL.md").read_text().split("---", 2)[1]
+            line = next(x for x in front.splitlines() if x.startswith("description:"))
+            descriptions[name] = line.lower()
+        analysis = descriptions["citation-analysis"]
+        # The analysis skill must not claim the search/export surface.
+        assert "citation" in analysis
+        assert "export references" not in analysis

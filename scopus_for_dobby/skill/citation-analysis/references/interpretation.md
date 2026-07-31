@@ -1,0 +1,99 @@
+# Interpretation — what each output means, and what not to claim
+
+## Metric validity by graph shape
+
+| Analysis | Depth 1 | Depth ≥2 | Why |
+|---|---|---|---|
+| **Gap papers** | ✅ | ✅ strongest | Uses `reached_by` (structure) × `cited_by_count` (an OpenAlex attribute, complete regardless of expansion) |
+| **Bibliographic coupling** | ✅ seeds only | ✅ seeds + expanded | Needs complete reference lists, which only `seed`/`expanded` nodes have |
+| **Co-citation** | ✅ ≥2 seeds | ✅ richer | Same requirement, viewed from the cited side |
+| **Communities on a projection** | ⚠️ thin | ✅ | Projections have real structure; the raw graph does not |
+| **In-degree of a frontier node** | ⚠️ misreads | ⚠️ misreads | Counts *how many of your papers cite it*, capped at your corpus size — not a citation count |
+| **PageRank / betweenness / closeness** | ❌ | ⚠️ still biased | Depth 1 is a star (all paths ≤ 2 hops); deeper graphs still have a truncated frontier |
+| **Communities on the raw graph** | ❌ | ❌ | A star has no community structure — the algorithm will invent groupings |
+
+`openalex analyze` reports `topology.supports` and a `reasons` string for
+anything it refuses. Quote the reason to the user rather than silently
+omitting the section.
+
+## Node roles
+
+| Role | Meaning | Safe for structural metrics? |
+|---|---|---|
+| `seed` | One of the user's papers (depth 0) | Yes |
+| `expanded` | Cleared the relevance gate and was fetched | Yes |
+| `frontier` | Appeared as an endpoint, never expanded | **No** — edges truncated by where expansion stopped |
+
+A frontier node with zero out-edges has not "cited nothing"; we simply never
+asked. Treating that as data is the most common way to produce a wrong answer
+here.
+
+## Reading each section
+
+### Gap papers — the headline
+
+Ranked by `reached_by` first, then `cited_by_count`. That ordering is
+deliberate: a paper five of the user's own papers cite matters more to *them*
+than a more famous one cited by only one.
+
+- `[3x] … — 3095 citations` = three of their papers cite it; the wider
+  literature cites it 3095 times; **they do not have it**.
+- A high citation count with `[1x]` is often a general reference (a methods
+  handbook, a rate-constant table) rather than a topical gap. Say so instead of
+  recommending it blindly.
+- Unresolved stubs (works OpenAlex has deleted or merged) are filtered out —
+  they cannot be looked up, so they are not recommendations.
+
+**Recommend action**: fetch them with `abstract <DOI>` and add to the
+collection, then re-run the analysis and watch the gap list shrink.
+
+### Themes (communities)
+
+Clusters over the **coupling projection** — papers grouped because they cite
+the same work, not because a topic model said so. Interpret a cluster as "these
+papers address a common problem", and use the representative titles to name it.
+
+Two useful readings:
+- A cluster with many of the user's papers = well covered.
+- A cluster that is mostly gap papers = a subtopic their query underserves →
+  suggest a follow-up search using terms from those titles.
+
+Modularity is reported; below ~0.3 the split is weak, so hedge accordingly.
+
+### Co-citation — the intellectual base
+
+Pairs of works the corpus repeatedly cites *together*. These are the shared
+foundations of the field as seen from this corpus. Useful for orienting a
+newcomer, and for spotting a canon the user has not read.
+
+Requires ≥2 seeds that actually share references. **Zero results is a real
+finding** — "your papers share no references" means the search returned
+topically unrelated work. Report it that way; it is not a failure.
+
+### Outlier seeds
+
+Seeds sharing no references with any other seed. Usually keyword collisions
+(a query term with a second meaning). Recommend reviewing and pruning; do not
+delete anything on the user's behalf.
+
+### Coverage
+
+Read first, report first. Seeds without DOIs never enter the graph; seeds not
+in OpenAlex are missing from the analysis entirely. If either number is large
+relative to the corpus, every downstream finding is partial — say so before
+presenting results, not after.
+
+`truncated: true` means `--max-nodes` stopped expansion early. The findings are
+a *sample*, not a survey. Never present a truncated graph as complete.
+
+## Honest phrasing
+
+| Claim | Say instead |
+|---|---|
+| "The most influential paper is X" | "X is cited by N of your papers and has M citations overall" |
+| "The field splits into 3 clusters" | "Your 40 papers split into 3 groups by shared references" |
+| "This is a complete map" | "This covers what your N seeds cite, expanded M level(s)" |
+| "X is central to the field" | (avoid — this graph cannot support centrality) |
+
+The corpus is a sample of the user's making. Every finding is a statement about
+*their* search results, not about the field.

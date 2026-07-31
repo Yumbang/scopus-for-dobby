@@ -62,6 +62,26 @@ openalex graph 2-s2.0-85012345678 -d cited-by -f csv -o cites.csv   # seed = EID
 | `csv` | `<stem>_nodes.csv` + `<stem>_edges.csv` | Gephi import, pandas, spreadsheets |
 | `json` | node-link JSON | `networkx.node_link_graph(json.load(f))` |
 
+### Depth and analysis
+
+`--depth 1..3` expands further than the seeds' immediate neighbours. Past level
+1 only **corroborated** nodes expand — those at least `--min-reached` (default
+2) of your papers point at — which is what keeps depth affordable and on-topic.
+Nodes carry `role` (`seed` / `expanded` / `frontier`), `depth`, and
+`reached_by`.
+
+To *interpret* a graph rather than export it, use `openalex analyze` — coverage,
+papers your corpus cites but lacks, themes, and foundational works:
+
+```bash
+scopus-for-dobby openalex analyze --collection review --depth 2
+```
+
+**For anything beyond building the file — which metrics this graph shape can
+support, how to read the output, how deep to go — use the `citation-analysis`
+skill.** It matters: a depth-1 graph is a star, so centrality measures on it
+describe the crawl rather than the literature.
+
 ## Literature-Mapping Workflow
 
 ```bash
