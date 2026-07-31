@@ -25,10 +25,9 @@ import sys
 import time
 from pathlib import Path
 
-from .serve import PID_FILE, PORT_FILE, daemon_endpoint
+from .serve import LOG_FILE, MAX_LOG_BYTES, PID_FILE, PORT_FILE, daemon_endpoint
 
 LOCK_FILE = Path.home() / ".scopus-for-dobby" / "daemon.lock"
-LOG_FILE = Path.home() / ".scopus-for-dobby" / "daemon.log"
 DEFAULT_PORT = 8765
 # uvicorn cold-start budget. The first /health triggers DuckDB init + an FTS
 # extension install (possibly a network download), so the default is generous
@@ -79,9 +78,26 @@ def _wait_for_health(base_url: str, deadline: float) -> bool:
     return False
 
 
+def _rotate_if_oversized() -> bool:
+    """Move an oversized ``daemon.log`` aside. Returns True if it rotated."""
+    try:
+        if not LOG_FILE.exists() or LOG_FILE.stat().st_size <= MAX_LOG_BYTES:
+            return False
+        LOG_FILE.replace(LOG_FILE.with_name(LOG_FILE.name + ".1"))
+        return True
+    except OSError:  # pragma: no cover — best-effort housekeeping
+        return False
+
+
 def _spawn(port: int) -> None:
     """Fork ``scopus-for-dobby serve --background`` as a detached process."""
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # This handle catches whatever the child writes before it configures its
+    # own rotating handler (import errors, interpreter crashes). Roll it over
+    # here if it is already oversized: the child's RotatingFileHandler only
+    # rotates on records it writes itself, so a raw redirect could otherwise
+    # keep appending past the cap.
+    _rotate_if_oversized()
     log = open(LOG_FILE, "ab")  # noqa: SIM115 — handed to subprocess
     # The daemon log can echo request paths/params; keep it owner-only, mirroring
     # config.json (utils/api_client.py).

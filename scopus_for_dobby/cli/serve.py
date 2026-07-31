@@ -8,6 +8,7 @@ machine tool, not a multi-user service.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import signal
 import socket
@@ -18,6 +19,14 @@ import click
 
 PID_FILE = Path.home() / ".scopus-for-dobby" / "daemon.pid"
 PORT_FILE = Path.home() / ".scopus-for-dobby" / "daemon.port"
+LOG_FILE = Path.home() / ".scopus-for-dobby" / "daemon.log"
+
+# The log is genuinely useful — a real one grew to 3.9 MB of DuckDB lock
+# failures and enrichment errors, which is exactly what you want to find
+# after the fact. It just has to stop growing forever: cap it and keep two
+# generations (~6 MB worst case).
+MAX_LOG_BYTES = 2 * 1024 * 1024
+LOG_BACKUPS = 2
 
 # Fast liveness probe budget — a recycled PID passes os.kill(pid, 0) but won't
 # answer on the recorded port, so we confirm the port is actually accepting.
@@ -34,6 +43,33 @@ def _clear_pid() -> None:
     for f in (PID_FILE, PORT_FILE):
         with contextlib.suppress(FileNotFoundError):
             f.unlink()
+
+
+def configure_file_logging() -> logging.Handler:
+    """Send this process's logs to a size-capped, rotating ``daemon.log``.
+
+    The daemon runs detached, so its logs are the only diagnostic available.
+    Whoever spawns it may or may not redirect stdout/stderr — the macOS GUI
+    sends both to /dev/null — so the daemon takes responsibility for its own
+    log rather than relying on the parent's redirection.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        LOG_FILE, maxBytes=MAX_LOG_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8"
+    )
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(handler)
+    # The log echoes request paths and error detail; keep it owner-only,
+    # mirroring config.json (utils/api_client.py).
+    with contextlib.suppress(OSError):
+        os.chmod(LOG_FILE, 0o600)
+    return handler
 
 
 def _port_responds(port: int) -> bool:
@@ -125,15 +161,25 @@ def register(cli):
         if background and effective_timeout == 0.0:
             effective_timeout = 600.0  # 10-minute idle window for lazy-spawn
 
+        log_kwargs = {}
+        if background:
+            # Detached: own the log file so it rotates instead of growing
+            # without bound, and so it works even when the spawner throws our
+            # stdout away (the macOS GUI does). log_config=None stops uvicorn
+            # from replacing the handler we just installed.
+            configure_file_logging()
+            log_kwargs["log_config"] = None
+        else:
+            click.echo(f"scopus-for-dobby daemon → http://{host}:{port}")
+
         try:
-            if not background:
-                click.echo(f"scopus-for-dobby daemon → http://{host}:{port}")
             uvicorn.run(
                 build_app(idle_timeout=effective_timeout or None),
                 host=host,
                 port=port,
                 log_level="warning" if background else "info",
                 reload=reload,
+                **log_kwargs,
             )
         finally:
             _clear_pid()
