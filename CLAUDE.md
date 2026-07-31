@@ -8,9 +8,9 @@ Always use `uv` for Python tooling (never pip, python -m pip, or virtualenv dire
 
 ```bash
 # Install the CLI as a uv tool (makes `scopus-for-dobby` available on PATH)
-uv tool install --reinstall --editable ".[cli,export]"
+uv tool install --reinstall --editable .
 # ...add the optional daemon (macOS GUI / multi-process access):
-uv tool install --reinstall --editable ".[cli,export,gui]"
+uv tool install --reinstall --editable ".[gui]"
 
 # Dev environment (for running tests and linting)
 uv venv && source .venv/bin/activate
@@ -29,8 +29,10 @@ pytest tests/test_core.py::TestArticleDB::test_add_entries
 
 After code changes, always reinstall the CLI tool before testing:
 ```bash
-uv tool install --reinstall --editable ".[cli,export]"
+uv tool install --reinstall --editable .
 ```
+
+Extras: `gui` is the only meaningful one (the HTTP daemon — `fastapi`, `uvicorn`, `httpx`). `cli` and `export` are empty backwards-compat aliases; their contents are core dependencies. Never reintroduce a dep the CLI needs at import time as an extra.
 
 ## Security
 

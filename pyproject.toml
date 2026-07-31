@@ -16,39 +16,41 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Programming Language :: Python :: 3",
 ]
+# Everything the CLI needs to work out of the box. `click` and
+# `prompt-toolkit` back the console script and the REPL — the entry point
+# cannot even import without them — and `openpyxl` backs `export`'s default
+# `--format xlsx`. Splitting these into extras only created installs that
+# resolve fine and then fail on first use.
 dependencies = [
     "requests>=2.28.0",
     "duckdb>=1.0.0",
+    "click>=8.0.0",
+    "prompt-toolkit>=3.0.0",
+    "openpyxl>=3.1.0",
 ]
 
 [project.optional-dependencies]
-cli = [
-    "click>=8.0.0",
-    "prompt-toolkit>=3.0.0",
-]
 # The HTTP daemon (`scopus-for-dobby serve`) and everything that speaks to
 # it. Required by the macOS GUI, and by anyone who wants two processes on
 # the database at once. The CLI runs against DuckDB in-process without it
-# — see the module docstring in `cli/_client.py`.
+# — see the module docstring in `cli/_client.py`. This is the only extra
+# that changes what you get.
 gui = [
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
     "httpx>=0.27.0",
 ]
-# Deprecated alias for `gui`, kept so older install instructions keep working.
+# Deprecated aliases, kept so existing install lines keep resolving.
+# `cli` and `export` are empty because their contents are core deps now.
+cli = []
+export = []
 gui-support = ["scopus-for-dobby[gui]"]
-export = [
-    "openpyxl>=3.1.0",
-]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.4.0",
-    "click>=8.0.0",
-    "prompt-toolkit>=3.0.0",
-    "openpyxl>=3.1.0",
-    # Daemon extra: the test suite covers both backends, so it needs the
-    # server stack. `fastapi.testclient` requires httpx.
+    # The test suite covers both DB backends, so it needs the daemon stack.
+    # `fastapi.testclient` requires httpx.
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
     "httpx>=0.27.0",

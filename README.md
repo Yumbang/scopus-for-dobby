@@ -5,17 +5,21 @@ Stateful CLI for searching, collecting, and managing academic papers from the Sc
 ## Installation
 
 ```bash
-# CLI + exports — this is all you need day to day
-uv tool install --editable ".[cli,export]"
+# CLI, REPL, and exports — this is all you need day to day
+uv tool install --editable .
 
 # Optional: add the HTTP daemon (needed by the macOS GUI, or to run
 # several clients against the database at once)
-uv tool install --editable ".[cli,export,gui]"
+uv tool install --editable ".[gui]"
 ```
 
-The `gui` extra pulls in `fastapi`, `uvicorn`, and `httpx`. Without it the CLI
-talks to DuckDB in-process — fewer dependencies, faster startup, no background
-process left running. See [Daemon](#serve--http-daemon) below.
+`gui` is the only extra that changes what you get: it pulls in `fastapi`,
+`uvicorn`, and `httpx`. Without it the CLI talks to DuckDB in-process — fewer
+dependencies, faster startup, no background process left running. See
+[Daemon](#serve--http-daemon) below.
+
+> The old `[cli]` and `[export]` extras are now empty aliases — their contents
+> are core dependencies — so existing `".[cli,export]"` install lines keep working.
 
 ## Quick Start
 
@@ -63,7 +67,7 @@ scopus-for-dobby
 
 ### `serve` — HTTP daemon
 
-Optional. Requires the `gui` extra: `uv pip install -e '.[cli,export,gui]'`.
+Optional. Requires the `gui` extra: `uv pip install -e '.[gui]'`.
 
 DuckDB permits only one read/write process per file, so how the CLI reaches the
 database depends on whether a daemon is up:

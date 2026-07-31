@@ -21,7 +21,7 @@ The Python side must be installed **with the `gui` extra**, which is what
 provides the daemon (`fastapi`, `uvicorn`, `httpx`):
 
 ```bash
-uv tool install --reinstall --editable ".[cli,export,gui]"
+uv tool install --reinstall --editable ".[gui]"
 ```
 
 Then the daemon must be running. Either:

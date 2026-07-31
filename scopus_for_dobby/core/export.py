@@ -114,7 +114,11 @@ def export_xlsx(articles: list[dict], output_path: str) -> dict:
         from openpyxl.styles import Alignment, Font, PatternFill
         from openpyxl.utils import get_column_letter
     except ImportError as err:
-        raise RuntimeError("openpyxl not installed. Run: pip install openpyxl") from err
+        # openpyxl is a core dependency; reaching here means a broken install.
+        raise RuntimeError(
+            "openpyxl not installed — reinstall the package: "
+            "uv tool install --reinstall --editable '.'"
+        ) from err
 
     # Auto-detect tier
     has_abstract = any(a.get("abstract") for a in articles)

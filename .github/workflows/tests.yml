@@ -58,7 +58,7 @@ jobs:
       - name: Install without the daemon extra
         run: |
           uv venv --clear
-          uv pip install -e ".[cli,export]" pytest
+          uv pip install -e . pytest
 
       - name: Assert the daemon stack really is absent
         run: |
