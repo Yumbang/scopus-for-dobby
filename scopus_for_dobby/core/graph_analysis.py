@@ -68,6 +68,41 @@ def _label(graph: dict, sid: str) -> str:
     return graph["nodes"].get(sid, {}).get("label") or sid
 
 
+def seed_citation_counts(graph: dict) -> Counter:
+    """How many seeds cite each work, computed from the edge list.
+
+    Deliberately derived rather than read from ``seed_reached_by``: graphs
+    exported before that field existed would otherwise fall back to
+    ``reached_by``, which counts expanded nodes too. On a real depth-2 graph
+    that reported EPR as cited by 148 of the user's papers when the true figure
+    was 38 — and a label reading "148 of your papers" is worse than the vague
+    number it replaced. The edges are always present, so this is always exact.
+    """
+    seeds = {s for s, n in graph["nodes"].items() if n.get("role") == ROLE_SEED}
+    counts: Counter = Counter()
+    for src, dst in graph["edges"]:
+        if src in seeds:
+            counts[dst] += 1
+    return counts
+
+
+def seeds_without_references(graph: dict) -> list[str]:
+    """Seeds carrying no reference data at all.
+
+    OpenAlex simply has no reference list for some works. Those seeds enter
+    the graph and are counted in every total, but contribute nothing to
+    coupling, co-citation or gap papers — so every reference-based figure is
+    really over this smaller denominator. On a real 273-seed corpus this was
+    47 papers, and nothing in the output revealed it.
+    """
+    refs = _references_of(graph)
+    return sorted(
+        s
+        for s, n in graph["nodes"].items()
+        if n.get("role") == ROLE_SEED and not refs.get(s)
+    )
+
+
 def describe_topology(graph: dict) -> dict:
     """Which analyses this particular graph supports, and why.
 
@@ -187,12 +222,15 @@ def co_citation(graph: dict, *, min_shared: int = 2) -> list[dict]:
 def gap_papers(graph: dict, known_dois=(), *, limit: int = 20) -> list[dict]:
     """Works the corpus repeatedly cites but does not contain.
 
-    The most actionable output here, and the one least sensitive to topology:
-    ``reached_by`` says how much of your own library points at a paper, and
+    The most actionable output here, and the one least sensitive to topology.
+    Ranked on ``seed_reached_by`` — how many of *your* papers cite it — not on
+    ``reached_by``, which also counts expanded nodes and therefore overstates
+    corpus interest at depth ≥2 (EPR: 148 vs 38 on a real corpus).
     ``cited_by_count`` is OpenAlex's own figure, complete regardless of how far
     we expanded. High on both, absent from your library → read it next.
     """
     known = {d for d in (normalize_doi(x) for x in known_dois) if d}
+    seed_counts = seed_citation_counts(graph)
     out = []
     for sid, node in graph["nodes"].items():
         if node.get("is_seed"):
@@ -201,6 +239,7 @@ def gap_papers(graph: dict, known_dois=(), *, limit: int = 20) -> list[dict]:
         if doi and doi in known:
             continue
         reached = node.get("reached_by", 0)
+        seed_reached = seed_counts.get(sid, 0)
         if reached < 1:
             continue
         # Works OpenAlex no longer returns (deleted or merged) survive as stubs
@@ -217,20 +256,28 @@ def gap_papers(graph: dict, known_dois=(), *, limit: int = 20) -> list[dict]:
                 "doi": doi or "",
                 "cited_by_count": node.get("cited_by_count") or 0,
                 "reached_by": reached,
+                "seed_reached_by": seed_reached,
                 "role": node.get("role"),
             }
         )
     # Corroboration first: a paper five of your seeds cite matters more than a
     # famous one only one cites.
-    out.sort(key=lambda r: (-r["reached_by"], -r["cited_by_count"], r["id"]))
+    out.sort(key=lambda r: (-r["seed_reached_by"], -r["cited_by_count"], r["id"]))
     return out[:limit]
 
 
 def outlier_seeds(graph: dict) -> list[dict]:
     """Seeds sharing no references with any other seed.
 
-    Usually a sign the search returned something off-topic — worth pruning
-    before the collection is used for anything else.
+    Two very different situations reach this list, and conflating them told
+    users their papers were off-topic when we simply had no data:
+
+    * ``unrelated`` — the seed has references, none shared. A real signal;
+      usually a keyword collision worth pruning.
+    * ``no_reference_data`` — OpenAlex holds no reference list for it, so it
+      *cannot* share anything. Says nothing about the paper.
+
+    Both are returned, tagged, so the caller can report them separately.
     """
     refs = _references_of(graph)
     seeds = [s for s, n in graph["nodes"].items() if n.get("role") == ROLE_SEED]
@@ -239,14 +286,66 @@ def outlier_seeds(graph: dict) -> list[dict]:
         if refs[a] & refs[b]:
             coupled.add(a)
             coupled.add(b)
-    return [
-        {
-            "id": s,
-            "label": _label(graph, s),
-            "references": len(refs.get(s, ())),
-        }
-        for s in sorted(set(seeds) - coupled)
+    out = []
+    for s in sorted(set(seeds) - coupled):
+        count = len(refs.get(s, ()))
+        out.append(
+            {
+                "id": s,
+                "label": _label(graph, s),
+                "references": count,
+                "reason": "unrelated" if count else "no_reference_data",
+            }
+        )
+    return out
+
+
+def reference_age(graph: dict) -> dict:
+    """How backward-looking this corpus is.
+
+    Measured over ``seed -> reference`` edges rather than over nodes, so a work
+    ten seeds cite counts ten times — the question is what the corpus *reaches
+    for*, not what happens to be in the graph. The classic bibliometric read:
+    a recent median means a fast-moving front, a long tail means the field
+    still argues with its founding literature.
+    """
+    years = graph["nodes"]
+    # Seed edges only. Expanded nodes are neighbourhood, not corpus — counting
+    # their references dilutes the measure with literature the user never
+    # collected (on a real graph it moved the median from 2014 to 2006).
+    seeds = {s for s, n in graph["nodes"].items() if n.get("role") == ROLE_SEED}
+    cited_years = [
+        years[dst]["year"]
+        for src, dst in graph["edges"]
+        if src in seeds and isinstance(years.get(dst, {}).get("year"), int)
     ]
+    if not cited_years:
+        return {"references_with_year": 0, "median_year": None, "eras": {}, "shares": {}}
+
+    cited_years.sort()
+    n = len(cited_years)
+    median = cited_years[n // 2] if n % 2 else (cited_years[n // 2 - 1] + cited_years[n // 2]) / 2
+
+    eras = {"pre-1940": 0, "1940-1979": 0, "1980-1999": 0, "2000-2014": 0, "2015+": 0}
+    for y in cited_years:
+        if y < 1940:
+            eras["pre-1940"] += 1
+        elif y < 1980:
+            eras["1940-1979"] += 1
+        elif y < 2000:
+            eras["1980-1999"] += 1
+        elif y < 2015:
+            eras["2000-2014"] += 1
+        else:
+            eras["2015+"] += 1
+
+    return {
+        "references_with_year": n,
+        "median_year": median,
+        "quartiles": [cited_years[n // 4], median, cited_years[(3 * n) // 4]],
+        "eras": eras,
+        "shares": {k: round(v / n, 4) for k, v in eras.items()},
+    }
 
 
 def corpus_stats(graph: dict) -> dict:
@@ -262,8 +361,15 @@ def corpus_stats(graph: dict) -> dict:
         "expanded": roles[ROLE_EXPANDED],
         "frontier": roles[ROLE_FRONTIER],
         "unmatched_seeds": list(graph.get("unmatched") or []),
+        # Seeds that matched OpenAlex but carry no reference list. They inflate
+        # every seed total while contributing to no reference-based measure, so
+        # `seeds_with_references` is the real denominator for those figures.
+        "seeds_without_references": len(seeds_without_references(graph)),
+        "seeds_with_references": roles[ROLE_SEED] - len(seeds_without_references(graph)),
         "depth": meta.get("depth", 1),
         "truncated": bool(meta.get("truncated")),
+        "stopped_before_level": meta.get("stopped_before_level"),
+        "openalex_requests": meta.get("requests"),
         "year_range": [min(years), max(years)] if years else None,
     }
 
@@ -271,12 +377,46 @@ def corpus_stats(graph: dict) -> dict:
 # ── Communities (optional networkx) ───────────────────────────────────────────
 
 
-def communities(pairs: list[dict], *, resolution: float = 1.0, seed: int = 7) -> list[dict]:
+def theme_composition(graph: dict, members: list[str], *, top: int = 5) -> list[dict]:
+    """The references a theme's own papers most share.
+
+    What actually names a cluster. The `representative` list only gives the
+    highest-degree members — useful, but "these papers all cite Bell 1964" says
+    far more about what a group *is* than any five of its titles.
+    """
+    refs = _references_of(graph)
+    inside = [m for m in members if m in refs]
+    counts: Counter = Counter()
+    for m in inside:
+        counts.update(refs[m])
+    return [
+        {
+            "id": rid,
+            "label": _label(graph, rid),
+            "cited_by_members": count,
+            "share": round(count / len(inside), 4) if inside else 0.0,
+        }
+        for rid, count in counts.most_common(top)
+    ]
+
+
+def communities(
+    pairs: list[dict],
+    *,
+    resolution: float = 1.0,
+    seed: int = 7,
+    graph: dict | None = None,
+    top: int = 5,
+) -> list[dict]:
     """Cluster a projection into themes.
 
     Deliberately takes a *projection* (coupling or co-citation pairs), never
     the raw citation graph: a star has no community structure to find, so
     running this on the raw graph would invent groupings.
+
+    Pass ``graph`` to attach each theme's most-shared references and labelled
+    members. Member lists are bounded by ``top`` — a large theme is hundreds of
+    bare IDs, which is unreadable and drowns the useful part of a JSON report.
     """
     # Nothing to cluster is not a dependency problem — answer before importing.
     if not pairs:
@@ -305,15 +445,19 @@ def communities(pairs: list[dict], *, resolution: float = 1.0, seed: int = 7) ->
     out = []
     for i, members in enumerate(sorted(found, key=len, reverse=True), 1):
         ranked = sorted(members, key=lambda m: -g.degree(m, weight="weight"))
-        out.append(
-            {
-                "id": i,
-                "size": len(members),
-                "members": sorted(members),
-                "representative": [
-                    {"id": m, "label": labels.get(m, m)} for m in ranked[:5]
-                ],
-                "modularity": round(modularity, 4),
-            }
-        )
+        theme = {
+            "id": i,
+            "size": len(members),
+            "members": [
+                {"id": m, "label": labels.get(m, m)} for m in ranked[:top]
+            ],
+            "members_truncated": max(0, len(members) - top),
+            "representative": [
+                {"id": m, "label": labels.get(m, m)} for m in ranked[:5]
+            ],
+            "modularity": round(modularity, 4),
+        }
+        if graph is not None:
+            theme["top_shared_references"] = theme_composition(graph, list(members), top=top)
+        out.append(theme)
     return out

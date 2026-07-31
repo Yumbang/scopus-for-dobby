@@ -135,9 +135,17 @@ def _depth_options(func):
             click.option(
                 "--max-nodes",
                 type=int,
-                default=oa.DEFAULT_MAX_NODES,
-                show_default=True,
-                help="Stop expanding past this many nodes.",
+                default=None,
+                help="Budget for expansion beyond your seeds "
+                f"(default: max({oa.DEFAULT_MAX_NODES}, {oa.NODES_PER_SEED} x seeds)). "
+                "Checked between levels, so a level never half-runs.",
+            ),
+            click.option(
+                "--node-fields",
+                type=click.Choice(sorted(oa.NODE_FIELD_SETS)),
+                multiple=True,
+                help="Extra OpenAlex fields on nodes (e.g. authorships). "
+                "Opt-in: enlarges every response.",
             ),
             click.option(
                 "--deep-direction",
@@ -189,6 +197,7 @@ def oa_graph(
     min_reached,
     max_nodes,
     deep_direction,
+    node_fields,
 ):
     """Export a citation graph around saved articles to a graph file.
 
@@ -229,6 +238,7 @@ def oa_graph(
         min_reached=min_reached,
         max_nodes=max_nodes,
         deep_direction=deep_direction,
+        node_fields=tuple(node_fields),
     )
     files = oa.GRAPH_WRITERS[fmt](graph, out_path)
 
@@ -241,6 +251,8 @@ def oa_graph(
         "roles": graph["meta"]["roles"],
         "depth": graph["meta"]["depth"],
         "truncated": graph["meta"]["truncated"],
+        "max_nodes": graph["meta"]["max_nodes"],
+        "openalex_requests": graph["meta"]["requests"],
         "files": files,
     }
     if state.json_output:
@@ -254,9 +266,12 @@ def oa_graph(
         skin.hint(f"     {len(graph['unmatched'])} seed(s) not found in OpenAlex")
     if no_doi:
         skin.hint(f"     {len(no_doi)} seed(s) skipped (no DOI)")
+    skin.hint(f"     {graph['meta']['requests']} OpenAlex request(s)")
     if graph["meta"]["truncated"]:
         skin.warning(
-            f"     Stopped at --max-nodes {max_nodes}: the graph is incomplete."
+            f"     Stopped before depth {graph['meta']['stopped_before_level']} at "
+            f"--max-nodes {graph['meta']['max_nodes']}. Every level that ran is "
+            f"complete; raise --max-nodes to go deeper."
         )
 
 
@@ -300,6 +315,7 @@ def oa_analyze(
     min_reached,
     max_nodes,
     deep_direction,
+    node_fields,
 ):
     """Explain a citation graph: what the query found, missed, and what to read.
 
@@ -336,6 +352,7 @@ def oa_analyze(
             min_reached=min_reached,
             max_nodes=max_nodes,
             deep_direction=deep_direction,
+            node_fields=tuple(node_fields),
         )
 
     if dry_run and not from_file:
@@ -367,7 +384,7 @@ def oa_analyze(
     community_error = None
     if want_communities:
         try:
-            themes = ga.communities(coupling)
+            themes = ga.communities(coupling, graph=graph, top=top)
         except ga.AnalysisUnsupported as e:
             community_error = str(e)
 
@@ -379,6 +396,7 @@ def oa_analyze(
         "coupling": coupling[:top],
         "co_citation": cocited[:top],
         "outlier_seeds": outliers,
+        "reference_age": ga.reference_age(graph),
         "themes": themes,
     }
     if community_error:
@@ -404,8 +422,21 @@ def _print_report(skin, report: dict, top: int) -> None:
         skin.hint(f"  {len(stats['unmatched_seeds'])} seed(s) not found in OpenAlex")
     if report["seeds_without_doi"]:
         skin.hint(f"  {len(report['seeds_without_doi'])} seed(s) skipped (no DOI)")
+    # The denominator for every reference-based figure below. Silent before,
+    # and on a real corpus it removed 47 of 273 seeds from all of them.
+    if stats.get("seeds_without_references"):
+        skin.warning(
+            f"  {stats['seeds_without_references']} seed(s) have no reference data in "
+            f"OpenAlex — coupling, co-citation and gap papers are over the remaining "
+            f"{stats['seeds_with_references']}."
+        )
     if stats["truncated"]:
-        skin.warning("  Graph was truncated at --max-nodes: findings are partial.")
+        skin.warning(
+            f"  Stopped before depth {stats.get('stopped_before_level')} at --max-nodes: "
+            f"levels that ran are complete, but the corpus was not expanded further."
+        )
+    if stats.get("openalex_requests") is not None:
+        skin.hint(f"  {stats['openalex_requests']} OpenAlex request(s)")
 
     if report["gap_papers"]:
         click.echo()
@@ -413,7 +444,7 @@ def _print_report(skin, report: dict, top: int) -> None:
         for row in report["gap_papers"]:
             year = row["year"] or "n.d."
             click.echo(
-                f"  [{row['reached_by']}x] {row['label'][:70]} ({year}) "
+                f"  [{row['seed_reached_by']} of your papers] {row['label'][:64]} ({year}) "
                 f"— {row['cited_by_count']} citations"
             )
             if row["doi"]:
@@ -425,9 +456,25 @@ def _print_report(skin, report: dict, top: int) -> None:
         for theme in report["themes"]:
             names = ", ".join(m["label"][:40] for m in theme["representative"][:2])
             click.echo(f"  #{theme['id']} — {theme['size']} papers: {names}")
+            # What a theme shares says more about what it *is* than its titles.
+            for ref in theme.get("top_shared_references", [])[:3]:
+                click.echo(
+                    f"        {ref['cited_by_members']}/{theme['size']} cite: "
+                    f"{ref['label'][:56]}"
+                )
     elif report.get("communities_error"):
         click.echo()
         skin.warning(report["communities_error"])
+
+    age = report.get("reference_age") or {}
+    if age.get("median_year"):
+        click.echo()
+        shares = age["shares"]
+        skin.info(
+            f"Reference age: median {age['median_year']:g}, "
+            f"{shares.get('2015+', 0):.0%} from 2015+, "
+            f"{shares.get('pre-1940', 0):.1%} pre-1940"
+        )
 
     if report["co_citation"]:
         click.echo()
@@ -438,11 +485,21 @@ def _print_report(skin, report: dict, top: int) -> None:
                 f"{pair['target_label'][:34]}"
             )
 
-    if report["outlier_seeds"]:
+    # Split by reason: telling someone their paper looks off-topic when we
+    # simply have no reference data for it is a false accusation.
+    unrelated = [r for r in report["outlier_seeds"] if r["reason"] == "unrelated"]
+    no_data = [r for r in report["outlier_seeds"] if r["reason"] == "no_reference_data"]
+    if unrelated:
         click.echo()
         skin.warning("Seeds sharing no references with the rest (possibly off-topic):")
-        for row in report["outlier_seeds"]:
+        for row in unrelated:
             click.echo(f"  {row['label'][:70]}")
+    if no_data:
+        click.echo()
+        skin.hint(
+            f"{len(no_data)} seed(s) have no reference data in OpenAlex — "
+            f"they cannot share references, which says nothing about their topic."
+        )
 
     unsupported = [k for k, ok in topology["supports"].items() if not ok]
     if unsupported:

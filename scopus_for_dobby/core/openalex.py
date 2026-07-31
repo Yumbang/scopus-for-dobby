@@ -71,12 +71,24 @@ def _throttle():
     _last_call = time.monotonic()
 
 
+#: Every OpenAlex request this process has made. Commands report it so the
+#: cost of a run is visible: without it neither the user nor an agent can say
+#: what a graph build spent, or budget against it mid-run.
+_request_count = 0
+
+
+def request_count() -> int:
+    return _request_count
+
+
 def oa_get(path: str, params: dict | None = None) -> dict:
     """GET an OpenAlex endpoint and return the parsed JSON.
 
     Raises RuntimeError with a sanitized message on failure — response
     bodies go to the debug log only, mirroring ``api_client.api_get``.
     """
+    global _request_count
+    _request_count += 1
     params = dict(params or {})
     email = get_polite_email()
     if email:
@@ -214,6 +226,22 @@ MAX_DEPTH = 3
 DEFAULT_MAX_NODES = 5000
 DEFAULT_MIN_REACHED = 2
 
+#: Depth-1 size scales with the corpus: works carry ~19-50 references each, so
+#: a fixed 5000 caps out around 270 seeds. Larger corpora would spend their
+#: whole budget before finishing level 1. The default now grows with the seed
+#: count; an explicit --max-nodes always wins.
+NODES_PER_SEED = 25
+
+#: Extra OpenAlex fields callers can request on nodes. Author data is opt-in,
+#: not default: it answers a whole class of person-level question ("does this
+#: corpus still cite Bohr") that the graph otherwise cannot, but it materially
+#: enlarges every response payload, and most graph work never needs it.
+NODE_FIELD_SETS = {"authorships": "authorships"}
+
+
+def default_max_nodes(seed_count: int) -> int:
+    return max(DEFAULT_MAX_NODES, NODES_PER_SEED * seed_count)
+
 
 def _wants(direction: str, kind: str) -> bool:
     return direction in (kind, "both")
@@ -226,8 +254,9 @@ def build_citation_graph(
     per_seed_limit: int = 200,
     depth: int = 1,
     min_reached: int = DEFAULT_MIN_REACHED,
-    max_nodes: int = DEFAULT_MAX_NODES,
+    max_nodes: int | None = None,
     deep_direction: str = "references",
+    node_fields: tuple[str, ...] = (),
     on_progress=None,
 ) -> dict:
     """Build a citation graph around ``seeds`` (local article dicts with DOIs).
@@ -260,7 +289,15 @@ def build_citation_graph(
         d = normalize_doi(s.get("doi"))
         if d:
             seed_by_doi[d] = s
-    works = fetch_works_by_dois(seed_by_doi.keys(), select=_GRAPH_SELECT + ",referenced_works")
+
+    if max_nodes is None:
+        max_nodes = default_max_nodes(len(seed_by_doi))
+
+    extra = [NODE_FIELD_SETS[f] for f in node_fields if f in NODE_FIELD_SETS]
+    node_select = ",".join([_GRAPH_SELECT, *extra])
+
+    requests_before = request_count()
+    works = fetch_works_by_dois(seed_by_doi.keys(), select=node_select + ",referenced_works")
     unmatched = [seed_by_doi[d].get("eid", d) for d in seed_by_doi if d not in works]
 
     nodes: dict[str, dict] = {}
@@ -269,6 +306,7 @@ def build_citation_graph(
     refs_cache: dict[str, list[str]] = {}
     expanded: set[str] = set()
     truncated = False
+    stopped_before_level: int | None = None
 
     def _stub(sid: str, level: int) -> dict:
         return {
@@ -289,6 +327,14 @@ def build_citation_graph(
         node["year"] = work.get("publication_year")
         node["doi"] = normalize_doi(work.get("doi")) or ""
         node["cited_by_count"] = work.get("cited_by_count") or 0
+        if "authorships" in extra:
+            names = [
+                (a.get("author") or {}).get("display_name", "")
+                for a in work.get("authorships") or []
+            ]
+            names = [n for n in names if n]
+            node["authors"] = names
+            node["first_author"] = names[0] if names else ""
 
     def _touch(sid: str, level: int, by: str | None = None) -> None:
         if sid not in nodes:
@@ -312,10 +358,26 @@ def build_citation_graph(
         _cache_refs(sid, work)
 
     # ── levels 1..depth ──────────────────────────────────────────────────────
+    #
+    # The node budget is checked BETWEEN levels, never inside one. Breaking
+    # mid-level used to abandon the seeds later in the iteration order, and
+    # those seeds kept ``role: seed`` — which the analysis layer reads as
+    # "this node's reference list is complete". So a truncated graph silently
+    # computed coupling, co-citation and outliers over papers whose references
+    # were never fetched, and then told the user they looked off-topic.
+    # Levels are now atomic: either every node in a level is expanded or the
+    # level does not start, so a role always means what it says.
     for level in range(1, depth + 1):
         if level == 1:
-            # Seeds are the user's own selection — no gate applies to them.
+            # Seeds are the user's own selection — no gate applies to them,
+            # and the budget never blocks them. The cap governs expansion
+            # *beyond* the corpus; refusing to process the input the user
+            # explicitly chose would be the wrong kind of thrift.
             to_expand = [s for s, n in nodes.items() if n["depth"] == 0]
+        elif len(nodes) >= max_nodes:
+            truncated = True
+            stopped_before_level = level
+            break
         else:
             # Any node the corpus has corroborated and that we have not
             # expanded yet — deliberately NOT restricted to nodes first seen at
@@ -355,14 +417,11 @@ def build_citation_graph(
                 nodes[sid]["role"] = ROLE_EXPANDED
             if on_progress:
                 on_progress(done, len(to_expand))
-            if len(nodes) >= max_nodes:
-                truncated = True
-                break
 
         # Referenced works arrive as bare IDs — resolve metadata in batches.
         # Pull `referenced_works` too when another level might expand them.
         if pending_meta:
-            select = _GRAPH_SELECT + (",referenced_works" if level < depth else "")
+            select = node_select + (",referenced_works" if level < depth else "")
             for sid, work in fetch_works_by_ids(pending_meta, select=select).items():
                 if sid in nodes:
                     _fill(sid, work)
@@ -370,11 +429,20 @@ def build_citation_graph(
                     if level < depth:
                         _cache_refs(sid, work)
 
-        if truncated:
-            break
+    # ``reached_by`` counts every expanding node that points at a work, which is
+    # the right signal for the relevance gate but NOT the question a reader
+    # asks of a gap paper. "How much of *my library* cites this" is seed-only,
+    # and the two diverge sharply with depth — on a real 273-seed corpus, EPR
+    # showed reached_by 148 against 38 actual seed citations. Emit both.
+    seed_ids = {s for s, n in nodes.items() if n["role"] == ROLE_SEED}
+    seed_citations: Counter = Counter()
+    for src, dst in edges:
+        if src in seed_ids:
+            seed_citations[dst] += 1
 
     for sid, node in nodes.items():
         node["reached_by"] = len(reached.get(sid, ()))
+        node["seed_reached_by"] = seed_citations.get(sid, 0)
         node.pop("_filled", None)
 
     roles = Counter(n["role"] for n in nodes.values())
@@ -390,6 +458,9 @@ def build_citation_graph(
             "per_seed_limit": per_seed_limit,
             "max_nodes": max_nodes,
             "truncated": truncated,
+            "stopped_before_level": stopped_before_level,
+            "node_fields": list(node_fields),
+            "requests": request_count() - requests_before,
             "roles": dict(roles),
         },
     }

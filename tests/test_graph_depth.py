@@ -197,3 +197,68 @@ class TestPlanExpansion:
         plan = oa.plan_expansion(g, depth=3, min_reached=2)
         assert [level["level"] for level in plan["levels"]] == [2, 3]
         assert plan["levels"][1]["exact"] is False
+
+
+class TestBudgetIsLevelAtomic:
+    """Regression: truncation used to abandon seeds mid-level.
+
+    The old check sat inside the per-node loop, so a corpus larger than the
+    cap stopped part-way through level 1 — and the abandoned seeds kept
+    `role: seed`, which the analysis layer reads as "references complete".
+    Coupling, co-citation and outliers were then computed over papers whose
+    references were never fetched. The loss was in iteration order, so it was
+    a systematically biased slice, not a random one.
+    """
+
+    def test_every_seed_is_expanded_even_under_a_tiny_cap(self, fake_openalex):
+        g = build(depth=1, max_nodes=2)
+        sources = {s for s, _ in g["edges"]}
+        seeds = {s for s, n in g["nodes"].items() if n["is_seed"]}
+        assert seeds <= sources, f"seeds silently skipped: {sorted(seeds - sources)}"
+
+    def test_roles_never_lie_under_truncation(self, fake_openalex):
+        """A node marked seed/expanded must actually have its edges."""
+        g = build(depth=3, min_reached=1, max_nodes=3)
+        sources = {s for s, _ in g["edges"]}
+        for sid, node in g["nodes"].items():
+            if node["role"] in (oa.ROLE_SEED, oa.ROLE_EXPANDED):
+                assert sid in sources, f"{sid} claims {node['role']} but has no out-edges"
+
+    def test_budget_stops_between_levels_and_says_where(self, fake_openalex):
+        g = build(depth=3, min_reached=1, max_nodes=3)
+        assert g["meta"]["truncated"] is True
+        assert g["meta"]["stopped_before_level"] in (2, 3)
+
+    def test_default_scales_with_seed_count(self):
+        assert oa.default_max_nodes(10) == oa.DEFAULT_MAX_NODES
+        # 273 seeds x ~19 refs overflowed the old fixed default at depth 1.
+        assert oa.default_max_nodes(273) > 5005
+        assert oa.default_max_nodes(1000) == oa.NODES_PER_SEED * 1000
+
+
+class TestSeedReachedBy:
+    def test_distinguishes_seed_citations_from_total_reach(self, fake_openalex):
+        """reached_by counts expanded nodes too; seed_reached_by must not."""
+        g = build(depth=2, min_reached=2)
+        x = g["nodes"]["X"]
+        # X is cited by seed S1 and by expanded node A.
+        assert x["reached_by"] == 2
+        assert x["seed_reached_by"] == 1
+
+    def test_matches_reached_by_at_depth_one(self, fake_openalex):
+        g = build(depth=1)
+        for node in g["nodes"].values():
+            if not node["is_seed"]:
+                assert node["seed_reached_by"] == node["reached_by"]
+
+
+class TestNodeFields:
+    def test_authorships_are_opt_in(self, fake_openalex):
+        assert "authors" not in build(depth=1)["nodes"]["S1"]
+
+    def test_authorships_requested_only_when_asked(self, fake_openalex):
+        build(depth=1)
+        assert not any("authorships" in p.get("select", "") for _, p in fake_openalex)
+        fake_openalex.clear()
+        build(depth=1, node_fields=("authorships",))
+        assert any("authorships" in p.get("select", "") for _, p in fake_openalex)

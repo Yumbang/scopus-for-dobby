@@ -342,3 +342,131 @@ class TestGapPaperQuality:
             [("S1", "T")],
         )
         assert [row["id"] for row in ga.gap_papers(g)] == ["T"]
+
+
+class TestSeedOnlyRanking:
+    """Gap papers must rank on how much of *your* library cites a work."""
+
+    def _graph_with_split(self):
+        return graph(
+            [
+                node("S1", ROLE_SEED),
+                node("E1", ROLE_EXPANDED, depth=1, reached=2),
+                node("E2", ROLE_EXPANDED, depth=1, reached=2),
+                # Cited by one seed and both expanded nodes.
+                node("POPULAR", ROLE_FRONTIER, depth=2, reached=3, cited=10, doi="10.1/p"),
+                # Cited by the seed only, but genuinely part of the corpus.
+                node("MINE", ROLE_FRONTIER, depth=1, reached=1, cited=5, doi="10.1/m"),
+            ],
+            [("S1", "POPULAR"), ("E1", "POPULAR"), ("E2", "POPULAR"), ("S1", "MINE")],
+            depth=2,
+        )
+
+    def test_seed_reached_by_is_reported(self):
+        g = self._graph_with_split()
+        for n in g["nodes"].values():
+            n["seed_reached_by"] = 1 if n["id"] in ("POPULAR", "MINE") else 0
+        rows = {r["id"]: r for r in ga.gap_papers(g)}
+        assert rows["POPULAR"]["reached_by"] == 3
+        assert rows["POPULAR"]["seed_reached_by"] == 1
+
+    def test_stays_exact_on_graphs_written_before_the_field_existed(self):
+        """Derived from edges, so an old export is not silently overstated.
+
+        Falling back to `reached_by` here would report POPULAR as cited by 3
+        of the user's papers when only 1 seed cites it — and the human output
+        renders that as "3 of your papers", a confident falsehood. The edge
+        list is always present, so the count is always recoverable.
+        """
+        g = self._graph_with_split()
+        for n in g["nodes"].values():
+            n.pop("seed_reached_by", None)
+        rows = {r["id"]: r for r in ga.gap_papers(g)}
+        assert rows["POPULAR"]["reached_by"] == 3
+        assert rows["POPULAR"]["seed_reached_by"] == 1
+
+    def test_counts_are_computed_not_trusted(self):
+        """A wrong stored value must not survive into the report."""
+        g = self._graph_with_split()
+        for n in g["nodes"].values():
+            n["seed_reached_by"] = 99
+        rows = {r["id"]: r for r in ga.gap_papers(g)}
+        assert rows["POPULAR"]["seed_reached_by"] == 1
+
+
+class TestSeedsWithoutReferences:
+    def _graph(self):
+        return graph(
+            [
+                node("S1", ROLE_SEED),
+                node("S2", ROLE_SEED),  # no out-edges at all
+                node("R", ROLE_FRONTIER, depth=1, reached=1),
+            ],
+            [("S1", "R")],
+        )
+
+    def test_identified(self):
+        assert ga.seeds_without_references(self._graph()) == ["S2"]
+
+    def test_reported_in_stats_with_the_real_denominator(self):
+        stats = ga.corpus_stats(self._graph())
+        assert stats["seeds"] == 2
+        assert stats["seeds_without_references"] == 1
+        assert stats["seeds_with_references"] == 1
+
+    def test_outliers_say_which_reason(self):
+        """"No data" must not be reported as "probably off-topic"."""
+        reasons = {r["id"]: r["reason"] for r in ga.outlier_seeds(self._graph())}
+        assert reasons["S2"] == "no_reference_data"
+        assert reasons["S1"] == "unrelated"
+
+
+class TestReferenceAge:
+    def test_measures_over_edges_not_nodes(self):
+        """A work three seeds cite should weigh three times."""
+        g = graph(
+            [
+                node("S1", ROLE_SEED),
+                node("S2", ROLE_SEED),
+                node("S3", ROLE_SEED),
+                node("OLD", ROLE_FRONTIER, depth=1, reached=3, year=1935),
+                node("NEW", ROLE_FRONTIER, depth=1, reached=1, year=2020),
+            ],
+            [("S1", "OLD"), ("S2", "OLD"), ("S3", "OLD"), ("S1", "NEW")],
+        )
+        age = ga.reference_age(g)
+        assert age["references_with_year"] == 4
+        assert age["median_year"] == 1935
+        assert age["eras"]["pre-1940"] == 3
+        assert age["shares"]["pre-1940"] == 0.75
+
+    def test_empty_graph_is_not_an_error(self):
+        age = ga.reference_age(graph([node("S1", ROLE_SEED)], []))
+        assert age["references_with_year"] == 0
+        assert age["median_year"] is None
+
+
+class TestThemeComposition:
+    def test_reports_what_a_theme_shares(self):
+        g = graph(
+            [
+                node("A", ROLE_SEED),
+                node("B", ROLE_SEED),
+                node("SHARED", ROLE_FRONTIER, depth=1, reached=2, label="Bell 1964"),
+                node("SOLO", ROLE_FRONTIER, depth=1, reached=1),
+            ],
+            [("A", "SHARED"), ("B", "SHARED"), ("A", "SOLO")],
+        )
+        comp = ga.theme_composition(g, ["A", "B"])
+        assert comp[0]["label"] == "Bell 1964"
+        assert comp[0]["cited_by_members"] == 2
+        assert comp[0]["share"] == 1.0
+
+    def test_communities_attach_composition_when_given_the_graph(self):
+        pytest.importorskip("networkx")
+        pairs = ga.bibliographic_coupling(COUPLED)
+        themes = ga.communities(pairs, graph=COUPLED, top=3)
+        assert themes
+        assert "top_shared_references" in themes[0]
+        assert len(themes[0]["members"]) <= 3
+        assert all("label" in m for m in themes[0]["members"])
