@@ -32,7 +32,8 @@ def repl():
         "author": "list | info | fetch | coauthors | note",
         "collection": "list | create | delete | add | remove | set | unset | current",
         "export": "--format xlsx|bibtex|ris [--collection NAME]",
-        "openalex": "enrich | graph | email — OA links & citation graphs",
+        "openalex": "enrich | graph | analyze | email — OA links, citation graphs & analysis",
+        "profile": "[-c COLL] [--terms] — what a set of papers is about",
         "help": "Show this help",
         "quit": "Exit REPL",
     }
