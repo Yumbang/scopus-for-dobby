@@ -89,11 +89,56 @@ def _open_conn(read_only: bool = False) -> duckdb.DuckDBPyConnection:
     return conn
 
 
+# v1 → v2: OpenAlex enrichment columns, as (name, DDL) so the migration can
+# report which ones it actually had to add.
+_V2_ARTICLE_COLUMNS = (
+    ("openalex_id", "openalex_id VARCHAR DEFAULT ''"),
+    ("oa_status", "oa_status VARCHAR DEFAULT ''"),
+    ("oa_url", "oa_url VARCHAR DEFAULT ''"),
+    ("openalex_cited_by", "openalex_cited_by INTEGER DEFAULT 0"),
+    ("openalex_topics", "openalex_topics JSON DEFAULT '[]'"),
+    ("openalex_enriched_at", "openalex_enriched_at VARCHAR DEFAULT ''"),
+)
+
+
+def _migrate_v1_to_v2(conn: duckdb.DuckDBPyConnection) -> list[str]:
+    """Add any missing v2 columns to ``articles``. Returns the names added.
+
+    Idempotent, and driven by the columns actually present rather than by the
+    version stamp — so it doubles as the repair path for databases whose stamp
+    does not match what is on disk. A half-applied migration self-heals on the
+    next open.
+    """
+    present = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'main' AND table_name = 'articles'"
+        ).fetchall()
+    }
+    added = []
+    for name, col_ddl in _V2_ARTICLE_COLUMNS:
+        if name not in present:
+            conn.execute(f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col_ddl}")  # noqa: S608
+            added.append(name)
+    return added
+
+
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """Create tables if they don't exist. Idempotent; runs at most once per process per DB."""
     path = Path(DB_PATH)
     if path in _schema_initialized:
         return
+    # Whether `articles` already exists must be sampled BEFORE any DDL runs:
+    # it is the only way to tell a brand-new database (safe to stamp with the
+    # current version) from one that predates `schema_meta` and still needs
+    # every migration. See the version gate at the end of this function.
+    pre_existing_db = bool(
+        conn.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = 'articles'"
+        ).fetchone()
+    )
     conn.execute("""
         CREATE TABLE IF NOT EXISTS articles (
             eid             VARCHAR PRIMARY KEY,
@@ -192,20 +237,38 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """)
     row = conn.execute("SELECT version FROM schema_meta").fetchone()
     if row is None:
-        conn.execute("INSERT INTO schema_meta (version) VALUES (?)", [SCHEMA_VERSION])
-    elif row[0] < 2:
-        # v1 → v2: OpenAlex enrichment columns. ADD COLUMN IF NOT EXISTS is
-        # idempotent, so a half-applied migration self-heals on rerun.
-        for col_ddl in (
-            "openalex_id VARCHAR DEFAULT ''",
-            "oa_status VARCHAR DEFAULT ''",
-            "oa_url VARCHAR DEFAULT ''",
-            "openalex_cited_by INTEGER DEFAULT 0",
-            "openalex_topics JSON DEFAULT '[]'",
-            "openalex_enriched_at VARCHAR DEFAULT ''",
-        ):
-            conn.execute(f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col_ddl}")  # noqa: S608
+        # No version stamp. Two very different databases land here:
+        #   * a brand-new one — nothing to migrate, stamp the current version;
+        #   * one created before `schema_meta` existed — it holds v1 tables and
+        #     must be migrated forward, so stamp it v1 and let the gate below
+        #     do the work.
+        # Stamping both with SCHEMA_VERSION (the original behaviour) silently
+        # marked legacy databases as up to date and skipped every migration —
+        # they kept working for reads, then failed on any query naming a column
+        # the migration was supposed to add.
+        version = SCHEMA_VERSION if not pre_existing_db else 1
+        conn.execute("INSERT INTO schema_meta (version) VALUES (?)", [version])
+    else:
+        version = row[0]
+
+    # Reconcile the columns that actually exist against what the current schema
+    # expects. This runs regardless of the stamp: databases mis-stamped by the
+    # bug described above already exist in the wild, and a version number is
+    # only evidence about migrations that ran — not about the shape on disk.
+    migrating = version < 2
+    added = _migrate_v1_to_v2(conn)
+
+    if migrating:
         conn.execute("UPDATE schema_meta SET version = ?", [SCHEMA_VERSION])
+    elif added:
+        logger.warning(
+            "Repaired schema drift in %s: added missing column(s) %s. The "
+            "database was stamped v%s but those columns were absent.",
+            path,
+            ", ".join(added),
+            version,
+        )
+
     _schema_initialized.add(path)
 
 
