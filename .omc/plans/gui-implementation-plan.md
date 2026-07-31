@@ -122,6 +122,22 @@
   - Failure mode: if `serve --background` crashes during boot, the CLI surfaces the daemon log path so the user can diagnose.
 - **Follow-ups:** Decide idle-shutdown default (600 s placeholder). Decide whether `scopus-for-dobby serve` (foreground, explicit) should be merged with `serve --background` or stay distinct. Consider a `scopus-for-dobby daemon stop` convenience command.
 
+### ADR-7a: Daemon becomes optional; CLI runs in-process by default (2026-07-30)
+
+- **Decision:** Amends ADR-7. The CLI no longer lazy-spawns a daemon. `cli/_client.py` is now a *router* that resolves one backend per process: in-process `core.article_db` by default, or `cli/_http.py` when `daemon.{pid,port}` point at a live process. The daemon stack (`fastapi`, `uvicorn`, `httpx`) moves out of core dependencies into an optional `[gui]` extra. `serve` and the GUI's `DaemonLauncher` remain the ways to start a daemon.
+- **Drivers:**
+  1. The GUI is used rarely; a CLI-only user was paying for the entire server stack (`fastapi` + `uvicorn` + `starlette` + `pydantic-core`) on every install.
+  2. Lazy-spawn left a uvicorn process alive for 600 s after any command, and appended to an unrotated `daemon.log` (3.9 MB observed in real use).
+  3. ADR-7's driver #2 ("two code paths per mutation") is satisfied differently: both backends are thin shims over the *same* `core.article_db` functions, and the events table is written by `core` either way — so the audit log stays complete.
+- **Why not keep lazy-spawn behind the extra:** it would preserve the orphan-process and log-growth costs for the one user who installs the GUI, to buy concurrency that is only actually needed while the GUI is open — and the GUI already starts its own daemon.
+- **Consequences:**
+  - CLI startup drops from an HTTP round-trip (~0.18 s) to ~0.09 s, with no daemon artifacts on disk.
+  - Two concurrent CLI processes (e.g. an agent alongside an open REPL) now contend on DuckDB's file lock. `cli/_output._friendly()` translates that into an actionable "start the daemon" message. This is the accepted trade-off.
+  - The REPL holds a DuckDB connection for its whole session again, so it blocks a GUI daemon from starting. Run `serve` first if you want both.
+  - `_client._API` is the explicit contract: a name must exist in both backends or attribute lookup raises.
+  - `cli/_daemon.py`'s spawn machinery is retained (tested, used by tests and available programmatically) but is no longer on the default CLI path.
+  - Test suite runs in both shapes: with `[gui]` installed the daemon backend is exercised via `TestClient`; without it, everything runs in-process and only `test_server.py` skips.
+
 ---
 
 ## Implementation Plan

@@ -9,6 +9,8 @@ Always use `uv` for Python tooling (never pip, python -m pip, or virtualenv dire
 ```bash
 # Install the CLI as a uv tool (makes `scopus-for-dobby` available on PATH)
 uv tool install --reinstall --editable ".[cli,export]"
+# ...add the optional daemon (macOS GUI / multi-process access):
+uv tool install --reinstall --editable ".[cli,export,gui]"
 
 # Dev environment (for running tests and linting)
 uv venv && source .venv/bin/activate
@@ -37,3 +39,12 @@ API credentials live in `~/.scopus-for-dobby/config.json` (chmod 600), never in 
 ## Architecture
 
 Stateful Click CLI for the Elsevier Scopus API. Runs as direct subcommands or interactive REPL (default). All API calls go through `utils/api_client.py` (`api_get()`), which handles auth headers and per-endpoint rate limiting. Local storage uses DuckDB (`core/article_db.py`) with articles, authors, and collections tables linked via an `article_authors` junction table. Authors are auto-extracted on every `add_entries()` call. Session state (last search/abstract) persists to disk so results survive across CLI invocations. All user data lives under `~/.scopus-for-dobby/`.
+
+### DB access path
+
+Subcommands never import `core/article_db` directly — they go through `cli/_client.py`, which picks one backend per process:
+
+- **in-process** (default) — `core/article_db` opened directly. No daemon, no HTTP.
+- **daemon** (`cli/_http.py`) — chosen only when `~/.scopus-for-dobby/daemon.{pid,port}` point at a live process, because DuckDB allows a single read/write process per file and the daemon holds it.
+
+The daemon stack (`fastapi`, `uvicorn`, `httpx`) lives in the optional `[gui]` extra. This amends ADR-7, which had every CLI invocation lazy-spawn a daemon. Any function reachable via `db_mod.<name>` must be listed in `_client._API` and implemented by **both** backends.

@@ -665,10 +665,7 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
-    { name = "fastapi" },
-    { name = "httpx" },
     { name = "requests" },
-    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -685,9 +682,20 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "uvicorn" },
 ]
 export = [
     { name = "openpyxl" },
+]
+gui = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "uvicorn" },
+]
+gui-support = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -695,10 +703,10 @@ requires-dist = [
     { name = "click", marker = "extra == 'cli'", specifier = ">=8.0.0" },
     { name = "click", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "duckdb", specifier = ">=1.0.0" },
-    { name = "fastapi", specifier = ">=0.110.0" },
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.110.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "fastapi", marker = "extra == 'gui'", specifier = ">=0.110.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
+    { name = "httpx", marker = "extra == 'gui'", specifier = ">=0.27.0" },
     { name = "openpyxl", marker = "extra == 'dev'", specifier = ">=3.1.0" },
     { name = "openpyxl", marker = "extra == 'export'", specifier = ">=3.1.0" },
     { name = "prompt-toolkit", marker = "extra == 'cli'", specifier = ">=3.0.0" },
@@ -707,9 +715,11 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "requests", specifier = ">=2.28.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
-    { name = "uvicorn", specifier = ">=0.27.0" },
+    { name = "scopus-for-dobby", extras = ["gui"], marker = "extra == 'gui-support'" },
+    { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.27.0" },
+    { name = "uvicorn", marker = "extra == 'gui'", specifier = ">=0.27.0" },
 ]
-provides-extras = ["cli", "gui-support", "export", "dev"]
+provides-extras = ["cli", "gui", "gui-support", "export", "dev"]
 
 [[package]]
 name = "starlette"

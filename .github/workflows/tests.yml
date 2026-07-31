@@ -39,6 +39,50 @@ jobs:
       - name: Tests (pytest)
         run: uv run pytest -q
 
+  cli-only:
+    # The daemon stack (fastapi/uvicorn/httpx) lives in the optional [gui]
+    # extra — see ADR-7a. Installing without it must still give a working
+    # CLI running against DuckDB in-process. Without this job, a stray
+    # top-level `import httpx` would put the deps silently back into core.
+    name: CLI-only install (no [gui] extra)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install without the daemon extra
+        run: |
+          uv venv --clear
+          uv pip install -e ".[cli,export]" pytest
+
+      - name: Assert the daemon stack really is absent
+        run: |
+          uv run python - <<'PY'
+          import importlib.util as u, sys
+          leaked = [m for m in ("fastapi", "uvicorn", "httpx", "starlette")
+                    if u.find_spec(m) is not None]
+          if leaked:
+              sys.exit(f"[gui] deps leaked into a CLI-only install: {leaked}")
+          print("clean: no daemon stack installed")
+          PY
+
+      - name: Tests (in-process backend)
+        run: uv run pytest -q
+
+      - name: Smoke-test the CLI end to end
+        run: |
+          uv run scopus-for-dobby db stats
+          uv run scopus-for-dobby --json collection create ci-smoke
+          uv run scopus-for-dobby --json collection list
+          # No daemon may have been spawned along the way.
+          test ! -e "$HOME/.scopus-for-dobby/daemon.pid" \
+            || (echo "a daemon was spawned by a plain CLI command" && exit 1)
+
   macos-gui:
     name: macOS GUI build
     # Needs Xcode 16+: current xcodegen emits project format 77, which

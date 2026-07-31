@@ -50,6 +50,29 @@ def _print_list(items: list, indent: int = 0):
             click.echo(f"{prefix}- {item}")
 
 
+def _friendly(e: Exception) -> str:
+    """Translate low-level failures into something the user can act on.
+
+    The common one is DuckDB's exclusive file lock: only one process may hold
+    the database read/write. The CLI runs in-process by default, so a second
+    concurrent invocation — or one racing an open REPL session — hits this.
+    The fix is to put a daemon in front of the file so every client shares it.
+    """
+    msg = str(e)
+    if "Could not set lock" in msg or "lock on file" in msg:
+        return (
+            "The article database is locked by another process — DuckDB allows "
+            "only one writer at a time.\n"
+            "This happens when a REPL session, another command, or the macOS GUI "
+            "already holds it.\n"
+            "To let several clients share the database, start the daemon and "
+            "re-run:\n"
+            "    scopus-for-dobby serve        # needs the [gui] extra\n"
+            f"\nOriginal error: {msg}"
+        )
+    return msg
+
+
 def handle_error(func):
     """Decorator for consistent error handling across commands."""
 
@@ -58,9 +81,9 @@ def handle_error(func):
             return func(*args, **kwargs)
         except Exception as e:
             if state.json_output:
-                click.echo(json.dumps({"error": str(e), "type": type(e).__name__}))
+                click.echo(json.dumps({"error": _friendly(e), "type": type(e).__name__}))
             else:
-                click.echo(f"Error: {e}", err=True)
+                click.echo(f"Error: {_friendly(e)}", err=True)
             if not state.repl_mode:
                 sys.exit(1)
 

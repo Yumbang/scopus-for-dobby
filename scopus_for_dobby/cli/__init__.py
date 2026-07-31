@@ -26,9 +26,9 @@ def cli(ctx, use_json):
     """
     state.json_output = use_json
 
-    # ADR-7: every CLI subcommand routes through the HTTP daemon. The
-    # daemon is lazy-spawned by ``cli/_daemon.ensure_daemon()`` on the
-    # first call from any subcommand; no guard is needed here.
+    # DB access is resolved per process by ``cli/_client.py``: in-process
+    # DuckDB by default, or HTTP if a daemon is already listening. Nothing
+    # to set up here — the first ``db_mod`` call decides.
 
     if ctx.invoked_subcommand is None:
         from .repl import repl as repl_cmd

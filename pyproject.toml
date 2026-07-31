@@ -19,11 +19,6 @@ classifiers = [
 dependencies = [
     "requests>=2.28.0",
     "duckdb>=1.0.0",
-    # ADR-7: CLI is a pure HTTP client that lazy-spawns the daemon. Every
-    # invocation needs both ends of the protocol, so these are core, not optional.
-    "fastapi>=0.110.0",
-    "uvicorn>=0.27.0",
-    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -31,9 +26,17 @@ cli = [
     "click>=8.0.0",
     "prompt-toolkit>=3.0.0",
 ]
-# Kept for backwards-compatibility with any tooling that still references it.
-# All daemon deps are now in core `dependencies` per ADR-7.
-gui-support = []
+# The HTTP daemon (`scopus-for-dobby serve`) and everything that speaks to
+# it. Required by the macOS GUI, and by anyone who wants two processes on
+# the database at once. The CLI runs against DuckDB in-process without it
+# — see the module docstring in `cli/_client.py`.
+gui = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "httpx>=0.27.0",
+]
+# Deprecated alias for `gui`, kept so older install instructions keep working.
+gui-support = ["scopus-for-dobby[gui]"]
 export = [
     "openpyxl>=3.1.0",
 ]
@@ -44,7 +47,10 @@ dev = [
     "click>=8.0.0",
     "prompt-toolkit>=3.0.0",
     "openpyxl>=3.1.0",
+    # Daemon extra: the test suite covers both backends, so it needs the
+    # server stack. `fastapi.testclient` requires httpx.
     "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
     "httpx>=0.27.0",
 ]
 

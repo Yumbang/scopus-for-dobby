@@ -1,10 +1,16 @@
-"""Lazy-spawn helper: ensure the HTTP daemon is running for CLI calls.
+"""Spawn helper: start the HTTP daemon and wait for it to answer.
 
-ADR-7 — every CLI subcommand goes through HTTP. ``ensure_daemon()`` checks
-``~/.scopus-for-dobby/daemon.{pid,port}``; if no live daemon exists it
-forks ``scopus-for-dobby serve --background``, waits up to ``BOOT_TIMEOUT``
-on ``GET /health``, and returns the base URL. A file lock prevents two
-concurrent CLIs from both spawning a daemon.
+``ensure_daemon()`` checks ``~/.scopus-for-dobby/daemon.{pid,port}``; if no
+live daemon exists it forks ``scopus-for-dobby serve --background``, waits up
+to ``BOOT_TIMEOUT`` on ``GET /health``, and returns the base URL. A file lock
+prevents two concurrent callers from both spawning a daemon.
+
+**Not on the default CLI path.** ADR-7 originally had every subcommand
+lazy-spawn a daemon; that was amended (see ``cli/_client.py``) so the CLI
+runs in-process and only attaches to a daemon someone else started. This
+module is what "someone else" uses — the macOS GUI shells out to
+``serve --background`` directly, and tests drive these helpers. Requires the
+optional ``[gui]`` extra for ``httpx``.
 """
 
 from __future__ import annotations
@@ -18,8 +24,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-
-import httpx
 
 from .serve import PID_FILE, PORT_FILE, daemon_endpoint
 
@@ -60,6 +64,10 @@ def _port_free(port: int) -> bool:
 
 
 def _wait_for_health(base_url: str, deadline: float) -> bool:
+    # httpx ships in the optional [gui] extra — import at call time so a
+    # CLI-only install can still import this module.
+    import httpx
+
     while time.monotonic() < deadline:
         try:
             r = httpx.get(f"{base_url}/health", timeout=HEALTH_TIMEOUT)

@@ -1,161 +1,100 @@
-"""HTTP-client facade mirroring :mod:`scopus_for_dobby.core.article_db`.
+"""Backend router for DB access from CLI subcommands.
 
-ADR-7 — every CLI subcommand routes through here. The function names and
-return shapes match ``core.article_db`` so subcommand code can simply
-swap its import (``from .._client import db_mod``) without changing
-call sites. ``ensure_daemon()`` is invoked lazily on first call.
+Subcommands do ``from . import _client as db_mod`` and then call
+``db_mod.list_articles(...)`` without caring how the call is fulfilled.
+This module picks one of two backends, once per process:
 
-``_normalize_entry`` is re-exported from ``core.article_db`` directly:
-it is a pure helper with no DB access and is used by ``cli/search.py``
-to shape entries before POSTing.
+* **in-process** (:mod:`scopus_for_dobby.core.article_db`) — the default.
+  Opens DuckDB directly. No subprocess, no HTTP hop, no daemon left
+  running afterwards.
+* **daemon** (:mod:`scopus_for_dobby.cli._http`) — selected only when a
+  daemon is *already* listening, i.e. ``serve`` was run explicitly or the
+  macOS GUI launched one. DuckDB allows a single read/write process per
+  file, so when the daemon holds the file we must go through it.
+
+Amends ADR-7: the CLI no longer lazy-spawns a daemon on every invocation.
+The daemon is a GUI/concurrency feature, shipped in the optional ``[gui]``
+extra along with ``fastapi``/``uvicorn``/``httpx``. A CLI-only install has
+none of them and never needs them — but it still detects and attaches to a
+daemon if one happens to be up, which is exactly the case where the extra
+is installed. The spawn machinery in ``_daemon.py`` is retained for tests
+and for anything that wants to start a daemon programmatically; nothing on
+the default CLI path calls it.
+
+Both backends take the same arguments and return the same shapes, so the
+router hands the chosen module's attribute straight to the caller.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-import httpx
-
 from scopus_for_dobby.core.article_db import _normalize_entry  # noqa: F401
 
-from ._daemon import ensure_daemon
+from .serve import daemon_endpoint
 
-_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
+# The CLI↔core contract. Any name a subcommand reaches for through
+# ``db_mod`` must appear here and be implemented by *both* backends —
+# otherwise a call would silently work in-process and fail against the
+# daemon (or vice versa).
+_API = frozenset({
+    "list_articles", "get_article", "add_entries", "remove_entries",
+    "enrich_articles",
+    "tag_articles", "untag_articles", "set_note",
+    "list_collections", "create_collection", "delete_collection",
+    "add_to_collection", "remove_from_collection",
+    "merge_collections", "rename_collection",
+    "list_authors", "get_author", "set_author_note", "find_coauthors",
+    "fetch_author_profile",
+    "search_articles_fts", "search_articles_like", "stats", "rebuild_fts",
+})
 
-# Tests install a factory here to bypass the lazy-spawn daemon and route
-# through ``fastapi.testclient.TestClient`` instead. Returns a
-# context-manager whose ``__enter__`` yields something with
-# ``.get/.post/.request`` (TestClient or httpx.Client both qualify).
-_client_factory = None  # type: ignore[var-annotated]
-
-
-def _client():
-    if _client_factory is not None:
-        return _client_factory()
-    base_url = ensure_daemon()
-    return httpx.Client(base_url=base_url, timeout=_TIMEOUT)
-
-
-def _get(path: str, **params: Any) -> Any:
-    params = {k: v for k, v in params.items() if v is not None}
-    with _client() as c:
-        r = c.get(path, params=params)
-        r.raise_for_status()
-        return r.json()
+# Resolved once per process: ``daemon_endpoint()`` reads two files and may
+# probe a TCP port, which is far too expensive to repeat on every call.
+_backend = None
 
 
-def _post(path: str, body: dict | None = None) -> Any:
-    with _client() as c:
-        r = c.post(path, json=body or {})
-        r.raise_for_status()
-        return r.json()
+def _resolve():
+    from . import _http
+
+    # A test factory stands in for a live daemon.
+    if _http._client_factory is not None:
+        return _http
+    if daemon_endpoint():
+        return _http
+    from scopus_for_dobby.core import article_db
+
+    return article_db
 
 
-def _delete(path: str, body: dict | None = None) -> Any:
-    with _client() as c:
-        r = c.request("DELETE", path, json=body or {})
-        r.raise_for_status()
-        return r.json()
+def backend():
+    """Return the module fulfilling DB calls for this process."""
+    global _backend
+    if _backend is None:
+        _backend = _resolve()
+    return _backend
 
 
-# ── Articles ──────────────────────────────────────────────────────────────────
-def list_articles(*, tag=None, collection=None, query=None, sort="added", limit=50):
-    return _get("/articles", tag=tag, collection=collection, query=query,
-                sort=sort, limit=limit)
+def backend_name() -> str:
+    """``"daemon"`` or ``"in-process"`` — for diagnostics and error messages."""
+    return "daemon" if backend().__name__.endswith("._http") else "in-process"
 
 
-def get_article(eid: str):
-    return _get(f"/articles/{eid}")
+def reset_backend() -> None:
+    """Drop the cached choice so the next call re-resolves.
+
+    Used by tests, and by anything that starts or stops a daemon mid-process.
+    """
+    global _backend
+    _backend = None
 
 
-def add_entries(entries, *, tags=None, collection=None):
-    return _post("/articles", {"entries": entries, "tags": tags,
-                               "collection": collection})
+def __getattr__(name: str):
+    if name not in _API:
+        raise AttributeError(
+            f"module {__name__!r} has no attribute {name!r} "
+            f"(not part of the CLI↔core API surface in _API)"
+        )
+    return getattr(backend(), name)
 
 
-def remove_entries(eids):
-    return _delete("/articles", {"eids": list(eids)})
-
-
-def enrich_articles(enrichments):
-    return _post("/articles/enrich", {"enrichments": list(enrichments)})
-
-
-# ── Tags & notes ──────────────────────────────────────────────────────────────
-def tag_articles(eids, tags):
-    return _post("/articles/tag", {"eids": list(eids), "tags": list(tags)})
-
-
-def untag_articles(eids, tags):
-    return _post("/articles/untag", {"eids": list(eids), "tags": list(tags)})
-
-
-def set_note(eid: str, note: str):
-    return _post(f"/articles/{eid}/note", {"note": note})
-
-
-# ── Collections ───────────────────────────────────────────────────────────────
-def list_collections():
-    return _get("/collections")
-
-
-def create_collection(name: str):
-    return _post("/collections", {"name": name})
-
-
-def delete_collection(name: str):
-    return _delete(f"/collections/{name}")
-
-
-def add_to_collection(name: str, eids):
-    return _post(f"/collections/{name}/articles", {"eids": list(eids)})
-
-
-def remove_from_collection(name: str, eids):
-    return _delete(f"/collections/{name}/articles", {"eids": list(eids)})
-
-
-def merge_collections(src: str, dst: str):
-    return _post("/collections/merge", {"src": src, "dst": dst})
-
-
-def rename_collection(old: str, new: str):
-    return _post("/collections/rename", {"old": old, "new": new})
-
-
-# ── Authors ───────────────────────────────────────────────────────────────────
-def list_authors(*, query=None, sort="papers", limit=50):
-    return _get("/authors", query=query, sort=sort, limit=limit)
-
-
-def get_author(auid: str):
-    return _get(f"/authors/{auid}")
-
-
-def set_author_note(auid: str, note: str):
-    return _post(f"/authors/{auid}/note", {"note": note})
-
-
-def find_coauthors(auid: str):
-    return _get(f"/authors/{auid}/coauthors")
-
-
-def fetch_author_profile(auid: str):
-    return _post(f"/authors/{auid}/fetch")
-
-
-# ── Search / stats ────────────────────────────────────────────────────────────
-def search_articles_fts(query: str, *, limit: int = 50):
-    return _get("/search/fts", query=query, limit=limit)
-
-
-def search_articles_like(query: str, *, limit: int = 50):
-    return _get("/search/like", query=query, limit=limit)
-
-
-def stats():
-    return _get("/stats")
-
-
-def rebuild_fts():
-    return _post("/fts/rebuild")
+def __dir__():
+    return sorted(set(globals()) | _API)

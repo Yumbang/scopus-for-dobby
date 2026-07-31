@@ -17,11 +17,22 @@ The `.xcodeproj` is gitignored — regenerate after editing `project.yml`.
 
 ## Run requirements
 
-The daemon must be reachable. Either:
+The Python side must be installed **with the `gui` extra**, which is what
+provides the daemon (`fastapi`, `uvicorn`, `httpx`):
 
-- run it explicitly: `scopus-for-dobby serve` in another terminal, or
-- run any CLI subcommand once (e.g. `scopus-for-dobby db stats`) which
-  lazy-spawns the background daemon.
+```bash
+uv tool install --reinstall --editable ".[cli,export,gui]"
+```
+
+Then the daemon must be running. Either:
+
+- let the app start it — the daemon-down empty state has a "Launch daemon"
+  button backed by `DaemonLauncher.swift` (`serve --background`), or
+- run it explicitly: `scopus-for-dobby serve` in another terminal.
+
+Note that plain CLI subcommands do **not** start a daemon: the CLI opens
+DuckDB in-process unless one is already listening. So `scopus-for-dobby db
+stats` will not bring the GUI to life — use one of the two options above.
 
 The app reads `~/.scopus-for-dobby/daemon.port` to discover the URL. If
 that file is missing it shows a "daemon not running" placeholder.

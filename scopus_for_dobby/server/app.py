@@ -51,7 +51,7 @@ def build_app(idle_timeout: float | None = None):
         from fastapi.responses import JSONResponse, StreamingResponse
     except ImportError as e:  # pragma: no cover
         raise RuntimeError(
-            "FastAPI not installed. Install with `pip install scopus-for-dobby[gui-support]`."
+            "FastAPI not installed. Install with `pip install 'scopus-for-dobby[gui]'`."
         ) from e
 
     # ``last`` is the monotonic timestamp of the most recent activity;

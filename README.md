@@ -5,8 +5,17 @@ Stateful CLI for searching, collecting, and managing academic papers from the Sc
 ## Installation
 
 ```bash
-uv tool install -e ".[export]"
+# CLI + exports — this is all you need day to day
+uv tool install --editable ".[cli,export]"
+
+# Optional: add the HTTP daemon (needed by the macOS GUI, or to run
+# several clients against the database at once)
+uv tool install --editable ".[cli,export,gui]"
 ```
+
+The `gui` extra pulls in `fastapi`, `uvicorn`, and `httpx`. Without it the CLI
+talks to DuckDB in-process — fewer dependencies, faster startup, no background
+process left running. See [Daemon](#serve--http-daemon) below.
 
 ## Quick Start
 
@@ -47,12 +56,30 @@ scopus-for-dobby
 | `author` | `coauthors` / `note` | Co-author network and notes |
 | `collection` | `create` / `delete` | Manage named collections |
 | `collection` | `add` / `remove` | Add/remove articles from collections |
-| `export` | | Export to XLSX or BibTeX |
+| `openalex` | `enrich` | Add open-access links, OA status, and OpenAlex citation counts (free, keyless) |
+| `openalex` | `graph` | Build citation graphs → GraphML / Gephi CSV / node-link JSON |
+| `export` | | Export to XLSX, BibTeX, or RIS |
 | `serve` | | Run the local HTTP daemon (for the macOS GUI / multi-process access) |
 
 ### `serve` — HTTP daemon
 
-`scopus-for-dobby serve` starts a FastAPI process bound to `127.0.0.1:8765` (default) that owns the only DuckDB connection. While the daemon is running, the CLI refuses mutating subcommands so the file lock is never contended. Stop it by killing the PID at `~/.scopus-for-dobby/daemon.pid`. Install with `uv pip install -e '.[gui-support]'`. Endpoints (auto-docs at `/docs`): `/articles`, `/collections`, `/search/fts`, `/events`, `/events/stream` (SSE), `/health`, `/stats`.
+Optional. Requires the `gui` extra: `uv pip install -e '.[cli,export,gui]'`.
+
+DuckDB permits only one read/write process per file, so how the CLI reaches the
+database depends on whether a daemon is up:
+
+| Situation | What the CLI does |
+|-----------|-------------------|
+| No daemon running (default) | Opens DuckDB in-process. Nothing is spawned or left behind. |
+| Daemon running | Detects it via `~/.scopus-for-dobby/daemon.port` and goes over HTTP, so the GUI and CLI share one connection. |
+
+`scopus-for-dobby serve` starts a FastAPI process on `127.0.0.1:8765` (default)
+that owns the only DuckDB connection. Start it when you want the macOS GUI, or
+two clients at once (e.g. an agent session alongside an open REPL) — without it,
+a second concurrent process hits DuckDB's file lock. Stop it by killing the PID
+at `~/.scopus-for-dobby/daemon.pid`. The macOS GUI launches it on its own.
+Endpoints (auto-docs at `/docs`): `/articles`, `/collections`, `/search/fts`,
+`/events`, `/events/stream` (SSE), `/health`, `/stats`.
 
 ## Access Tiers
 
