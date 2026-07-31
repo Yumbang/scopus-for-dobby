@@ -4,6 +4,9 @@ Stateful CLI for searching, collecting, and managing academic papers from the Sc
 
 ## Installation
 
+Runs on Python 3.10+; the project's default interpreter is **3.14** (pinned in
+`.python-version`).
+
 ```bash
 # CLI, REPL, and exports — this is all you need day to day
 uv tool install --editable .

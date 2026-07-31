@@ -8,6 +8,8 @@ version = "1.0.0"
 description = "Stateful CLI for Scopus academic database — search, collect, and manage research papers locally."
 readme = "README.md"
 license = "MIT"
+# Floor, not target. The project's default interpreter is pinned to 3.14 in
+# `.python-version`; CI tests both ends of this range.
 requires-python = ">=3.10"
 authors = [{ name = "ybang" }]
 classifiers = [
@@ -15,6 +17,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
 ]
 # Everything the CLI needs to work out of the box. `click` and
 # `prompt-toolkit` back the console script and the REPL — the entry point
@@ -63,6 +66,9 @@ scopus-for-dobby = "scopus_for_dobby.cli:main"
 where = ["."]
 
 [tool.ruff]
+# Deliberately the floor from requires-python, not the default interpreter:
+# this is what stops pyupgrade rewriting code into syntax that 3.10 cannot
+# parse. Raise it only together with requires-python.
 target-version = "py310"
 line-length = 100
 

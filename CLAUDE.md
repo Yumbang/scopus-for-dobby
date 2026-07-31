@@ -13,6 +13,7 @@ uv tool install --reinstall --editable .
 uv tool install --reinstall --editable ".[gui]"
 
 # Dev environment (for running tests and linting)
+# `.python-version` pins 3.14, so bare `uv venv` picks it up — don't pass --python.
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"  # [dev] bundles cli + export deps for tests
 
@@ -33,6 +34,10 @@ uv tool install --reinstall --editable .
 ```
 
 Extras: `gui` is the only meaningful one (the HTTP daemon — `fastapi`, `uvicorn`, `httpx`). `cli` and `export` are empty backwards-compat aliases; their contents are core dependencies. Never reintroduce a dep the CLI needs at import time as an extra.
+
+## Python version
+
+The project default is **3.14**, pinned in `.python-version` — that is what `uv venv` and `uv run` select. `requires-python` stays at `>=3.10`, which is a supported floor rather than a target: CI runs the suite on both ends. `[tool.ruff] target-version` tracks the **floor** (`py310`) so pyupgrade never rewrites code into syntax 3.10 cannot parse; raise the two together or not at all.
 
 ## Security
 
