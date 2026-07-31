@@ -22,7 +22,12 @@ _ALL = 100_000
 
 @click.group("openalex")
 def openalex():
-    """OpenAlex integration (free, keyless) — enrichment and citation graphs."""
+    """OpenAlex integration — enrichment, citation graphs, and analysis.
+
+    Free, but metered: ~$0.0001 per request against a daily budget. Without an
+    API key that budget is small and shared per IP address. Run `openalex key`
+    to check or set one — free at https://openalex.org/settings/api.
+    """
 
 
 @openalex.command("enrich")
@@ -168,8 +173,10 @@ def _depth_options(func):
     "--direction",
     "-d",
     type=click.Choice(["references", "cited-by", "both"]),
-    default="both",
-    help="references = what seeds cite; cited-by = what cites seeds",
+    default="references",
+    show_default=True,
+    help="references = what seeds cite (batched, cheap); cited-by = what cites "
+    "seeds (one request PER seed); both = each of the above",
 )
 @click.option(
     "--per-seed-limit", type=int, default=200, help="Max references/citers fetched per seed"
@@ -290,10 +297,11 @@ def oa_graph(
     "--direction",
     "-d",
     type=click.Choice(["references", "cited-by", "both"]),
-    default="both",
+    default="references",
     show_default=True,
-    help="references = what seeds cite; cited-by = what cites seeds. "
-    "Matches `graph`, so the same flags give the same graph in both commands.",
+    help="references = what seeds cite (batched, cheap); cited-by = what cites "
+    "seeds (one request PER seed). Matches `graph`, so the same flags give the "
+    "same graph in both commands.",
 )
 @click.option("--per-seed-limit", type=int, default=200, show_default=True)
 @click.option("--top", "-n", type=int, default=10, show_default=True, help="Rows per section")
@@ -326,7 +334,7 @@ def oa_analyze(
     Examples:
       scopus-for-dobby openalex analyze --collection review
       scopus-for-dobby openalex analyze --collection review --depth 2 --communities
-      scopus-for-dobby openalex analyze --from-file map.json --json
+      scopus-for-dobby --json openalex analyze --from-file map.json
       scopus-for-dobby openalex analyze --collection review --depth 3 --dry-run
     """
     from scopus_for_dobby.core import graph_analysis as ga
@@ -508,6 +516,44 @@ def _print_report(skin, report: dict, top: int) -> None:
             reason = topology["reasons"].get(key)
             if reason:
                 skin.hint(f"{key}: {reason}")
+
+
+@openalex.command("key")
+@click.argument("api_key", required=False)
+@handle_error
+def oa_key(api_key):
+    """Show or set the OpenAlex API key (free, and worth having).
+
+    OpenAlex meters a daily budget of roughly $0.0001 per request. Without a
+    key that budget is small and shared **per IP address** — another program on
+    the same machine can exhaust it and take this CLI down with it. A free key
+    is billed to you alone and is worth about 10x as much.
+
+    Get one at https://openalex.org/settings/api
+    """
+    from scopus_for_dobby.utils.repl_skin import ReplSkin
+
+    skin = ReplSkin()
+    if api_key:
+        oa.set_api_key(api_key)
+        if state.json_output:
+            output({"openalex_api_key": "set"})
+        else:
+            skin.success("OpenAlex API key saved to ~/.scopus-for-dobby/config.json")
+        return
+    current = oa.get_api_key()
+    if state.json_output:
+        output({"openalex_api_key": "set" if current else None})
+    elif current:
+        # Never echo the key itself.
+        skin.status("OpenAlex API key", f"set (…{current[-4:]})")
+    else:
+        skin.warning(
+            "No OpenAlex API key set. You are on the anonymous per-IP budget "
+            "(~1000 requests/day, shared with anything else on this machine)."
+        )
+        skin.hint("     Free key: https://openalex.org/settings/api "
+                  "then: openalex key <KEY>")
 
 
 @openalex.command("email")

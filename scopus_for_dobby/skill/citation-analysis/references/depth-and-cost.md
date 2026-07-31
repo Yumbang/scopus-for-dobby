@@ -35,9 +35,9 @@ behaviour, not a bug.
 
 | Depth | Use for | Notes |
 |---|---|---|
-| **1** (default) | "What did my search miss?", coverage checks, quick triage | Fast, cheap. A star — no centrality, no meaningful communities |
+| **1** (default) | "What did my search miss?", coverage checks, quick triage | Fast and cheap — the right default. A star, so no centrality and no meaningful communities |
 | **2** | Themes, research fronts, a real coupling network | The usual choice for a literature review. Structure becomes meaningful |
-| **3** | Tracing lineage back to foundational work | Only worth it with a tight, well-overlapped corpus; otherwise the gate stops it early anyway |
+| **3** | Tracing lineage back to foundational work | Rarely worth the budget. Only with a tight, well-overlapped corpus — and check `--dry-run` first, since on the anonymous budget this can exceed a whole day |
 
 Raise `--min-reached` to 3–4 for large seed sets (50+ papers) — with more
 seeds, corroboration is easier to reach, so the bar should rise with it. Lower
@@ -45,13 +45,30 @@ it to 1 only for very small corpora, and expect noise.
 
 ## Cost
 
+**The budget is far smaller than it used to be, and this matters more than any
+other tuning here.** OpenAlex bills ~$0.0001 per request against a daily
+allowance:
+
+| Caller | Daily budget | ≈ requests/day |
+|---|---|---|
+| Anonymous | ~$0.10, **shared per IP** | ~1,000 |
+| Free API key | ~$1.00, per account | ~10,000 |
+
+Set a key first (`openalex key <KEY>`, free at
+https://openalex.org/settings/api). Everything below assumes you have one; on
+the anonymous budget a single depth-2 build can consume the entire day.
+
 - **References** are fetched 50 works per request — cheap.
-- **Citers** cost **one paginated request per node**. That is why
-  `--deep-direction` defaults to `references`: at depth 3 with citers enabled,
-  a thousand expanded nodes means a thousand requests.
-- OpenAlex allows 100k requests/day and ~10/s; the client throttles itself.
-  Set a polite-pool email once (`openalex email you@uni.edu`) for better
-  service.
+- **Citers cost one paginated request per node.** This is the dominant cost:
+  `-d both` on 273 seeds spends 273 requests at level 1 alone, before a single
+  reference is resolved. `--direction` therefore defaults to `references`, and
+  `--deep-direction` does too.
+- Measured: a depth-2 graph over 273 seeds with `-d both` cost roughly **650
+  requests** — about two thirds of an anonymous day's budget, or 6% of a keyed
+  one.
+- Exceeding the budget returns 429 with a `Retry-After` measured in *hours*
+  (observed: 17h, resetting midnight UTC). There is no client-side recovery;
+  the CLI reports the reset time so you do not sit polling.
 
 Estimate before committing to a big run:
 
@@ -106,8 +123,11 @@ over simply raising `--max-nodes`.
 | 500+ | ~10,000+ | 3-4, and consider `-d references` |
 
 With more seeds, corroboration is easier to reach, so the gate should rise with
-the corpus — otherwise depth 2 expands far more than you want. Always
-`--dry-run` first on anything above ~100 seeds.
+the corpus — otherwise depth 2 expands far more than you want.
+
+`--dry-run` itself builds depth 1, so it is not free: on 273 seeds that is
+~5,000 nodes and a few hundred requests. It is still the right move before
+committing to depth 2-3, but budget for it rather than treating it as a preview.
 
 ## Reusing a graph
 

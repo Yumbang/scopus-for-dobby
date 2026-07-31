@@ -399,3 +399,101 @@ class TestSchemaMigration:
         assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == 2
         cols = {r[1] for r in conn.execute("PRAGMA table_info('articles')").fetchall()}
         assert "openalex_id" in cols
+
+
+# ── Rate limiting and authentication ──────────────────────────────────────────
+
+
+class _FakeResponse:
+    def __init__(self, status, headers=None, text=""):
+        self.status_code = status
+        self.headers = headers or {}
+        self.text = text
+        self.reason = "Too Many Requests"
+
+
+class TestApiKey:
+    """OpenAlex meters a daily USD budget; a key is what buys allowance.
+
+    Anonymous callers share one bucket *per IP address*, so an unrelated script
+    on the same machine can exhaust it. A free key is ~10x larger and billed to
+    the account, which is the actual remedy — not politeness.
+    """
+
+    def test_key_is_sent_when_configured(self, monkeypatch):
+        sent = {}
+
+        def _fake_get(url, params=None, timeout=None):
+            sent.update(params or {})
+            return _FakeResponse(200)
+
+        monkeypatch.setattr(oa, "get_api_key", lambda: "SECRET")
+        monkeypatch.setattr(oa, "get_polite_email", lambda: None)
+        monkeypatch.setattr(oa.requests, "get", _fake_get)
+        monkeypatch.setattr(_FakeResponse, "json", lambda self: {"results": []}, raising=False)
+        oa.oa_get("/works")
+        assert sent["api_key"] == "SECRET"
+
+    def test_absent_key_sends_nothing(self, monkeypatch):
+        sent = {}
+
+        def _fake_get(url, params=None, timeout=None):
+            sent.update(params or {})
+            return _FakeResponse(200)
+
+        monkeypatch.setattr(oa, "get_api_key", lambda: None)
+        monkeypatch.setattr(oa, "get_polite_email", lambda: None)
+        monkeypatch.setattr(oa.requests, "get", _fake_get)
+        monkeypatch.setattr(_FakeResponse, "json", lambda self: {"results": []}, raising=False)
+        oa.oa_get("/works")
+        assert "api_key" not in sent
+
+
+class TestRateLimitMessage:
+    """A 429 must say how long it lasts and what would have prevented it.
+
+    The old handler surfaced only the status code, leaving the user polling
+    against a block that `Retry-After` reported as 17 hours.
+    """
+
+    def test_reports_reset_time(self, monkeypatch):
+        monkeypatch.setattr(oa, "get_api_key", lambda: None)
+        msg = oa._rate_limit_message(
+            _FakeResponse(429, {"retry-after": "60893", "x-ratelimit-limit": "1000"})
+        )
+        assert "16h" in msg or "17h" in msg
+        assert "1000" in msg
+
+    def test_recommends_a_key_when_absent(self, monkeypatch):
+        monkeypatch.setattr(oa, "get_api_key", lambda: None)
+        msg = oa._rate_limit_message(_FakeResponse(429, {}))
+        assert "openalex key" in msg
+        assert "per IP" in msg
+
+    def test_does_not_recommend_a_key_when_one_is_set(self, monkeypatch):
+        monkeypatch.setattr(oa, "get_api_key", lambda: "SECRET")
+        msg = oa._rate_limit_message(_FakeResponse(429, {}))
+        assert "openalex key" not in msg
+        assert "midnight UTC" in msg
+
+    def test_never_leaks_the_body(self, monkeypatch):
+        monkeypatch.setattr(oa, "get_api_key", lambda: None)
+        msg = oa._rate_limit_message(_FakeResponse(429, {}, text="internal detail here"))
+        assert "internal detail" not in msg
+
+
+class TestCheapDefaults:
+    """`--direction` defaults to references: citers cost one request per seed."""
+
+    def test_graph_and_analyze_both_default_to_references(self):
+        from scopus_for_dobby.cli.openalex import oa_analyze, oa_graph
+
+        for cmd in (oa_graph, oa_analyze):
+            default = next(p.default for p in cmd.params if p.name == "direction")
+            assert default == "references", cmd.name
+
+    def test_depth_defaults_to_one(self):
+        from scopus_for_dobby.cli.openalex import oa_analyze, oa_graph
+
+        for cmd in (oa_graph, oa_analyze):
+            assert next(p.default for p in cmd.params if p.name == "depth") == 1

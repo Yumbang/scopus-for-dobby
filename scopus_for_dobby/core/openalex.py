@@ -1,9 +1,11 @@
 """OpenAlex API client — DOI enrichment and citation graphs.
 
 All OpenAlex REST calls go through this module. OpenAlex
-(https://docs.openalex.org) is free and keyless; an optional
-``openalex_email`` in config.json joins the polite pool for faster,
-more reliable service. Limits: 100k requests/day, max 10 req/s.
+(https://docs.openalex.org) is free but **metered**: roughly $0.0001 per
+request against a daily budget. Anonymous callers share ~$0.10/day **per IP
+address**; a free API key (``openalex_api_key`` in config.json) raises that to
+~$1/day billed per account. The optional ``openalex_email`` joins the polite
+pool, which affects queueing but **not** the budget.
 
 Citation graphs are never persisted to DuckDB — they are built in
 memory and written out as GraphML / CSV / node-link JSON for tools
@@ -60,6 +62,18 @@ def set_polite_email(email: str) -> None:
     save_config(config)
 
 
+def get_api_key() -> str | None:
+    """OpenAlex API key, or None."""
+    return load_config().get("openalex_api_key") or None
+
+
+def set_api_key(key: str) -> None:
+    """Persist the OpenAlex API key to config.json (chmod 600 like the rest)."""
+    config = load_config()
+    config["openalex_api_key"] = key
+    save_config(config)
+
+
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 
 
@@ -81,6 +95,39 @@ def request_count() -> int:
     return _request_count
 
 
+def _rate_limit_message(resp) -> str:
+    """Turn a 429 into something the reader can act on.
+
+    OpenAlex meters a daily USD budget (~$0.0001/request). Without a key that
+    budget is per-IP and small, so the useful facts are: how long the block
+    lasts, and whether a free API key would have avoided it.
+    """
+    parts = ["OpenAlex rate limit reached (HTTP 429)."]
+
+    retry = resp.headers.get("retry-after") or resp.headers.get("x-ratelimit-reset")
+    if retry and str(retry).isdigit():
+        seconds = int(retry)
+        parts.append(f"Resets in ~{seconds // 3600}h{(seconds % 3600) // 60:02d}m (midnight UTC).")
+
+    limit = resp.headers.get("x-ratelimit-limit")
+    if limit:
+        parts.append(f"Daily allowance: {limit} request(s).")
+
+    if not get_api_key():
+        parts.append(
+            "No API key configured — anonymous callers share one budget per IP "
+            "address, so another program on this machine can exhaust yours. A "
+            "free key gives roughly 10x the allowance and is billed to you "
+            "alone: get one at https://openalex.org/settings/api then run "
+            "`scopus-for-dobby openalex key <KEY>`."
+        )
+    else:
+        parts.append("Your API key's daily budget is spent; it resets at midnight UTC.")
+
+    logger.debug("OpenAlex 429 body: %s", resp.text[:500])
+    return " ".join(parts)
+
+
 def oa_get(path: str, params: dict | None = None) -> dict:
     """GET an OpenAlex endpoint and return the parsed JSON.
 
@@ -93,10 +140,22 @@ def oa_get(path: str, params: dict | None = None) -> dict:
     email = get_polite_email()
     if email:
         params["mailto"] = email
+    # An API key is what actually buys allowance. OpenAlex bills per request
+    # against a daily budget; anonymous callers share one bucket *per IP*, so a
+    # neighbouring script can exhaust yours. A free key moves you to a
+    # per-account budget worth ~10x as much. See `openalex key`.
+    key = get_api_key()
+    if key:
+        params["api_key"] = key
     _throttle()
     resp = requests.get(f"{BASE_URL}{path}", params=params, timeout=30)
     if resp.status_code == 200:
         return resp.json()
+    if resp.status_code == 429:
+        # The body and Retry-After carry the only actionable detail there is —
+        # how long the block lasts and whether it is budget or burst. Swallowing
+        # them (as this used to) leaves the user polling a 17-hour wall.
+        raise RuntimeError(_rate_limit_message(resp))
     logger.debug("OpenAlex error body for %s: %s", path, resp.text[:500])
     reason = resp.reason or "error"
     raise RuntimeError(f"OpenAlex error: HTTP {resp.status_code} on {path} ({reason}).")
@@ -642,7 +701,11 @@ def read_json_graph(path: str | Path) -> dict:
     nodes = {n["id"]: _coerce(n) for n in payload.get("nodes", [])}
     links = payload.get("links") or payload.get("edges") or []
     edges = sorted((link["source"], link["target"]) for link in links)
-    return {"nodes": nodes, "edges": edges, "unmatched": [], "meta": payload.get("graph") or {}}
+    meta = dict(payload.get("graph") or {})
+    meta["from_file"] = True
+    # `unmatched` is None, not []: which seeds OpenAlex could not match is not
+    # written to the export, and an empty list reads as "none were unmatched".
+    return {"nodes": nodes, "edges": edges, "unmatched": None, "meta": meta}
 
 
 def read_graphml(path: str | Path) -> dict:
@@ -665,7 +728,7 @@ def read_graphml(path: str | Path) -> dict:
     edges = sorted(
         (e.get("source"), e.get("target")) for e in graph_el.findall(f"{ns}edge")
     )
-    return {"nodes": nodes, "edges": edges, "unmatched": [], "meta": {}}
+    return {"nodes": nodes, "edges": edges, "unmatched": None, "meta": {"from_file": True}}
 
 
 GRAPH_READERS = {"graphml": read_graphml, "json": read_json_graph}

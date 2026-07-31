@@ -1,15 +1,29 @@
 # OpenAlex — Open Access Links & Citation Graphs
 
-OpenAlex (https://openalex.org) is **free and keyless** (100k requests/day, independent of the Scopus quota). Two capabilities: enrich saved articles by DOI, and export citation graphs. Use it whenever the user wants free PDFs, citation counts without Scopus charges, or a literature map.
+OpenAlex (https://openalex.org) is free to use and independent of the Scopus quota, but it is **not unmetered**. It bills a daily budget at roughly **$0.0001 per request**:
 
-## Setup (optional, once)
+| Caller | Daily budget | ≈ requests/day |
+|---|---|---|
+| Anonymous (no key) | ~$0.10, **shared per IP address** | ~1,000 |
+| With a free API key | ~$1.00, billed to your account | ~10,000 |
+
+**Set an API key.** It is free, takes a minute, and is the difference between
+~1,000 and ~10,000 requests a day — and it moves you off a bucket shared with
+every other program on the machine. Without one, an unrelated script can
+exhaust your allowance and this CLI becomes collateral damage.
+
+## Setup (do this once)
 
 ```bash
-openalex email you@university.edu   # joins the "polite pool": faster, more reliable
-openalex email                      # show current setting
+openalex key YOUR_KEY               # free at https://openalex.org/settings/api
+openalex key                        # show whether one is set (never prints it)
+openalex email you@university.edu   # polite pool: politeness, NOT extra budget
 ```
 
-Stored in `~/.scopus-for-dobby/config.json`. Everything works without it, just on the slower common pool.
+Both are stored in `~/.scopus-for-dobby/config.json` (chmod 600).
+
+The polite-pool email affects queueing, **not** your allowance — a rate-limited
+IP returns 429 identically with and without it. Only a key changes the budget.
 
 ## Enrichment
 
@@ -49,7 +63,7 @@ openalex graph --tag survey -d references -o refs.json    # seed = a tag
 openalex graph 2-s2.0-85012345678 -d cited-by -f csv -o cites.csv   # seed = EIDs
 ```
 
-- **Directions** (`-d`): `references` = what the seeds cite (backward); `cited-by` = what cites the seeds (forward — note Scopus charges extra for this, OpenAlex gives it free); `both` (default).
+- **Directions** (`-d`, default `references`): `references` = what the seeds cite (backward, batched 50/request — cheap); `cited-by` = what cites the seeds (forward; Scopus charges extra for this, OpenAlex does not — but it costs **one request per seed**); `both` = each of the above. The default is `references` because on 273 seeds `both` spends 273 requests before resolving a single reference.
 - **Semantics**: directed edge A → B means "A cites B". Seed nodes carry `is_seed=true`; node attributes: `label` (title), `year`, `doi`, `cited_by_count`.
 - **`--per-seed-limit N`** (default 200) caps references/citers fetched per seed. The default suits small seed sets; for 100+ seeds lower it (30–50) and/or use `-d references`, otherwise the graph file grows too large to open comfortably in Gephi.
 - Seeds need DOIs; seeds without one (or unknown to OpenAlex) are reported, not fatal.
@@ -60,15 +74,15 @@ openalex graph 2-s2.0-85012345678 -d cited-by -f csv -o cites.csv   # seed = EID
 |---|---|---|
 | `graphml` | single `.graphml` | Gephi, Cytoscape, networkx (`nx.read_graphml`) |
 | `csv` | `<stem>_nodes.csv` + `<stem>_edges.csv` | Gephi import, pandas, spreadsheets |
-| `json` | node-link JSON | `networkx.node_link_graph(json.load(f))` |
+| `json` | node-link JSON | `networkx.node_link_graph(json.load(f), edges="edges")` |
 
 ### Depth and analysis
 
 `--depth 1..3` expands further than the seeds' immediate neighbours. Past level
 1 only **corroborated** nodes expand — those at least `--min-reached` (default
 2) of your papers point at — which is what keeps depth affordable and on-topic.
-Nodes carry `role` (`seed` / `expanded` / `frontier`), `depth`, and
-`reached_by`.
+Nodes carry `role` (`seed` / `expanded` / `frontier`), `depth`, `reached_by`,
+and `seed_reached_by` (how many of *your* papers cite it — the one to report).
 
 To *interpret* a graph rather than export it, use `openalex analyze` — coverage,
 papers your corpus cites but lacks, themes, and foundational works:
