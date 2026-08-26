@@ -93,4 +93,6 @@ antiscalant protocol. Keywords worth exploring: 'membrane autopsy',
 
 The citation graph offers a second expansion axis that costs no Scopus quota: `openalex graph --collection X -d cited-by` surfaces newer papers citing your seeds — feed the interesting ones back through `abstract <doi>`.
 
+`fulltext` is for the **body**, not for screening. If a chosen paper's methods, quote, figure, or claim is needed, ask to fetch those EIDs unless the case is autonomous (named paper, cache hit, already approved) — details in `fulltext.md`. Then open `manifest.json` and the section markdown, not `xml/article.xml`. A large approved collection belongs in a subagent; the main context keeps the JSON summary.
+
 The main agent's context only ever holds synthesis reports, never the hundreds of raw results that produced them.

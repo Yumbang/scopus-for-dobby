@@ -6,7 +6,7 @@ import time
 import click
 
 from scopus_for_dobby.core import auth as auth_mod
-from scopus_for_dobby.utils.api_client import get_cached_quota
+from scopus_for_dobby.utils.api_client import get_cached_quota, load_config
 
 from ._output import handle_error, output
 
@@ -37,6 +37,20 @@ def _format_quota(quota: dict | None) -> dict:
         info["as_of"] = as_of
 
     info["note"] = "reflects the last API call, not a live value"
+    buckets = load_config().get("last_quotas") or {}
+    if buckets:
+        by_api = {}
+        for name, entry in buckets.items():
+            slot = {"remaining": entry.get("remaining")}
+            resets_at = _fmt_epoch(entry.get("reset"))
+            if resets_at:
+                slot["resets_at"] = resets_at
+            by_api[name] = slot
+        info["by_api"] = by_api
+        info["note"] = (
+            "last_quota is the most recent call; by_api is per Elsevier product "
+            "(sciencedirect-article is not the Scopus abstract budget)"
+        )
     return info
 
 

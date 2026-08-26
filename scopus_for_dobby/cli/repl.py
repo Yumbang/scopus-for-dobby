@@ -28,6 +28,7 @@ def repl():
         "search": "<query> [--limit N] [--sort FIELD] [--year RANGE]",
         "search-all": "<query> [--max N] — fetch multiple pages",
         "abstract": "<DOI|EID|ID> — get paper details",
+        "fulltext": "<DOI|EID> | -c COLL — Elsevier full text to local cache",
         "db": "add | list | remove | tag | untag | note | info | stats",
         "author": "list | info | fetch | coauthors | note",
         "collection": "list | create | delete | add | remove | set | unset | current",

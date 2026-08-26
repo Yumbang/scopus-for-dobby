@@ -25,6 +25,7 @@ struct Article: Identifiable, Decodable, Hashable {
     let notes: String?
     let addedAt: String?
     let updatedAt: String?
+    let fulltextFetchedAt: String?
 
     var id: String { eid }
 
@@ -47,6 +48,7 @@ struct Article: Identifiable, Decodable, Hashable {
         case notes = "_notes"
         case addedAt = "_added_at"
         case updatedAt = "_updated_at"
+        case fulltextFetchedAt = "fulltext_fetched_at"
     }
 }
 

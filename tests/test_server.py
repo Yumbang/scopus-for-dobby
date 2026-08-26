@@ -112,15 +112,38 @@ def test_events_endpoint(client):
 
 
 def test_search_fts_falls_back_to_like(client):
-    client.post("/articles", json={
-        "entries": [
-            _entry("E1", title="Attention is all you need", abstract="self-attention"),
-            _entry("E2", title="ResNet", abstract="residual learning"),
-        ]
-    })
+    client.post(
+        "/articles",
+        json={
+            "entries": [
+                _entry("E1", title="Attention is all you need", abstract="self-attention"),
+                _entry("E2", title="ResNet", abstract="residual learning"),
+            ]
+        },
+    )
     r = client.get("/search/fts?query=attention&limit=10")
     assert r.status_code == 200
     body = r.json()
     assert body["total"] >= 1
     eids = [a["eid"] for a in body["articles"]]
     assert "E1" in eids
+
+
+def test_lookup_and_fulltext_stamp(client):
+    client.post("/articles", json={"entries": [_entry("2-s2.0-lookup-1")]})
+    r = client.get("/articles/lookup", params={"identifier": "2-s2.0-lookup-1"})
+    assert r.status_code == 200
+    assert r.json()["eid"] == "2-s2.0-lookup-1"
+
+    r = client.get("/articles/lookup", params={"identifier": "missing"})
+    assert r.status_code == 404
+
+    r = client.post(
+        "/articles/fulltext",
+        json={"eid": "2-s2.0-lookup-1", "roles": {}},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["stamped"] is True
+    article = client.get("/articles/2-s2.0-lookup-1").json()
+    assert article["fulltext_fetched_at"]

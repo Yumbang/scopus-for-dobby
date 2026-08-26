@@ -119,9 +119,7 @@ class TestLegacyDatabaseWithoutStamp:
     def test_existing_rows_survive(self, db_path):
         _seed(db_path)
         conn = db_mod._get_conn()
-        row = conn.execute(
-            "SELECT title FROM articles WHERE eid = '2-s2.0-preexisting'"
-        ).fetchone()
+        row = conn.execute("SELECT title FROM articles WHERE eid = '2-s2.0-preexisting'").fetchone()
         assert row[0] == "Row written before the migration"
 
     def test_enrich_works(self, db_path):
@@ -130,14 +128,16 @@ class TestLegacyDatabaseWithoutStamp:
         db_mod.add_entries([SAMPLE])
         # Field names are the ones core.openalex.normalize_enrichment emits.
         result = db_mod.enrich_articles(
-            [{
-                "eid": SAMPLE["eid"],
-                "openalex_id": "W123",
-                "oa_status": "gold",
-                "oa_url": "https://example.org/paper.pdf",
-                "cited_by_count": 12,
-                "topics": ["hydrology"],
-            }]
+            [
+                {
+                    "eid": SAMPLE["eid"],
+                    "openalex_id": "W123",
+                    "oa_status": "gold",
+                    "oa_url": "https://example.org/paper.pdf",
+                    "cited_by_count": 12,
+                    "topics": ["hydrology"],
+                }
+            ]
         )
         assert result["enriched"] == 1
         article = db_mod.get_article(SAMPLE["eid"])
@@ -156,7 +156,9 @@ class TestMisStampedDatabase:
         assert set(V2_COLUMNS) <= _columns(conn)
 
     def test_repair_is_logged(self, db_path, caplog):
-        _seed(db_path, stamp_version=2)
+        # Stamp already at current version but columns never added — the
+        # drift-repair path (version gate does not run; column reconcile does).
+        _seed(db_path, stamp_version=db_mod.SCHEMA_VERSION)
         with caplog.at_level("WARNING"):
             db_mod._get_conn()
         assert "Repaired schema drift" in caplog.text
@@ -169,6 +171,16 @@ class TestMisStampedDatabase:
         )
         assert result["enriched"] == 1
         assert db_mod.get_article(SAMPLE["eid"])["openalex_id"] == "W999"
+
+
+class TestV2ToV3:
+    """v2 databases gain the fulltext stamp column."""
+
+    def test_adds_fulltext_fetched_at(self, db_path):
+        _seed(db_path, stamp_version=2, with_v2_columns=True)
+        conn = db_mod._get_conn()
+        assert "fulltext_fetched_at" in _columns(conn)
+        assert _version(conn) == db_mod.SCHEMA_VERSION
 
 
 class TestHealthyDatabases:

@@ -84,7 +84,7 @@ SKILLS: dict[str, Skill] = {
         name="scopus-for-dobby",
         summary=(
             "Driving the CLI: Scopus query syntax, the stateful library model, "
-            "collections and tags, OpenAlex enrichment, and export."
+            "collections and tags, OpenAlex enrichment, Elsevier full text, and export."
         ),
     ),
     "citation-analysis": Skill(

@@ -26,7 +26,7 @@ DB_PATH = CONFIG_DIR / "articles.duckdb"
 
 # Current on-disk schema version. Bump and add a migration gate in
 # ``_ensure_schema`` whenever the DDL changes incompatibly.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,29 @@ _V2_ARTICLE_COLUMNS = (
     ("openalex_enriched_at", "openalex_enriched_at VARCHAR DEFAULT ''"),
 )
 
+# v2 → v3: stamp that Elsevier full-text XML has been cached on disk.
+# The body itself is never a column — see core/fulltext.py.
+_V3_ARTICLE_COLUMNS = (("fulltext_fetched_at", "fulltext_fetched_at VARCHAR DEFAULT ''"),)
+
+
+def _add_missing_article_columns(
+    conn: duckdb.DuckDBPyConnection, spec: tuple[tuple[str, str], ...]
+) -> list[str]:
+    """Add any missing columns from ``spec``. Idempotent. Returns names added."""
+    present = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'main' AND table_name = 'articles'"
+        ).fetchall()
+    }
+    added = []
+    for name, col_ddl in spec:
+        if name not in present:
+            conn.execute(f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col_ddl}")  # noqa: S608
+            added.append(name)
+    return added
+
 
 def _migrate_v1_to_v2(conn: duckdb.DuckDBPyConnection) -> list[str]:
     """Add any missing v2 columns to ``articles``. Returns the names added.
@@ -109,19 +132,7 @@ def _migrate_v1_to_v2(conn: duckdb.DuckDBPyConnection) -> list[str]:
     does not match what is on disk. A half-applied migration self-heals on the
     next open.
     """
-    present = {
-        r[0]
-        for r in conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema = 'main' AND table_name = 'articles'"
-        ).fetchall()
-    }
-    added = []
-    for name, col_ddl in _V2_ARTICLE_COLUMNS:
-        if name not in present:
-            conn.execute(f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col_ddl}")  # noqa: S608
-            added.append(name)
-    return added
+    return _add_missing_article_columns(conn, _V2_ARTICLE_COLUMNS)
 
 
 def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
@@ -170,7 +181,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             oa_url               VARCHAR DEFAULT '',
             openalex_cited_by    INTEGER DEFAULT 0,
             openalex_topics      JSON DEFAULT '[]',
-            openalex_enriched_at VARCHAR DEFAULT ''
+            openalex_enriched_at VARCHAR DEFAULT '',
+            fulltext_fetched_at  VARCHAR DEFAULT ''
         )
     """)
     conn.execute("""
@@ -255,8 +267,9 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     # expects. This runs regardless of the stamp: databases mis-stamped by the
     # bug described above already exist in the wild, and a version number is
     # only evidence about migrations that ran — not about the shape on disk.
-    migrating = version < 2
+    migrating = version < SCHEMA_VERSION
     added = _migrate_v1_to_v2(conn)
+    added += _add_missing_article_columns(conn, _V3_ARTICLE_COLUMNS)
 
     if migrating:
         conn.execute("UPDATE schema_meta SET version = ?", [SCHEMA_VERSION])
@@ -417,12 +430,43 @@ def rebuild_fts() -> dict:
     return {"rebuilt": True, "rows": n}
 
 
+def _strip_accents(s: str) -> str:
+    """Normalize accented characters to ASCII for author-name comparison."""
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+
+
+def _name_keys(s: str) -> set[str]:
+    """Comparable keys for a personal name.
+
+    Elsevier full-text XML often indexes ``Cho K.`` while Scopus stored
+    ``Cho K.H.``. Exact string match misses; surname + first initial hits.
+    """
+    raw = _strip_accents(s or "").lower().replace(",", " ")
+    raw = " ".join(raw.split())
+    if not raw:
+        return set()
+    keys = {raw}
+    parts = [p for p in raw.replace(".", " ").split() if p]
+    if len(parts) >= 2:
+        keys.add(f"{parts[0]} {parts[1][0]}")
+    return keys
+
+
+def _names_hit(name: str, candidates: set[str]) -> bool:
+    keys = _name_keys(name)
+    return any(keys & _name_keys(c) for c in candidates)
+
+
 def _row_to_dict(row: tuple, columns: list[str]) -> dict:
     """Convert a DuckDB row tuple to a dict, parsing JSON fields."""
     d = dict(zip(columns, row, strict=False))
     # Parse JSON fields
     for key in (
-        "all_authors", "affiliations", "index_keywords", "subject_areas", "tags",
+        "all_authors",
+        "affiliations",
+        "index_keywords",
+        "subject_areas",
+        "tags",
         "openalex_topics",
     ):
         if key in d and isinstance(d[key], str):
@@ -439,17 +483,42 @@ def _row_to_dict(row: tuple, columns: list[str]) -> dict:
 
 
 _ARTICLE_COLUMNS = [
-    "eid", "scopus_id", "doi", "title", "first_author", "all_authors",
-    "journal", "volume", "issue", "pages", "cover_date", "cited_by",
-    "open_access", "abstract", "keywords", "issn", "source_type",
-    "affiliations", "index_keywords", "subject_areas",
-    "tags", "notes", "added_at", "updated_at",
-    "openalex_id", "oa_status", "oa_url",
-    "openalex_cited_by", "openalex_topics", "openalex_enriched_at",
+    "eid",
+    "scopus_id",
+    "doi",
+    "title",
+    "first_author",
+    "all_authors",
+    "journal",
+    "volume",
+    "issue",
+    "pages",
+    "cover_date",
+    "cited_by",
+    "open_access",
+    "abstract",
+    "keywords",
+    "issn",
+    "source_type",
+    "affiliations",
+    "index_keywords",
+    "subject_areas",
+    "tags",
+    "notes",
+    "added_at",
+    "updated_at",
+    "openalex_id",
+    "oa_status",
+    "oa_url",
+    "openalex_cited_by",
+    "openalex_topics",
+    "openalex_enriched_at",
+    "fulltext_fetched_at",
 ]
 
 
 # ── Normalize ────────────────────────────────────────────────────────────────
+
 
 def _normalize_entry(entry: dict) -> dict:
     """Normalize a Scopus search entry or abstract result into DB format."""
@@ -457,24 +526,26 @@ def _normalize_entry(entry: dict) -> dict:
         creator = entry.get("dc:creator", "")
         if isinstance(creator, dict):
             authors = creator.get("author", [])
-            first_author = authors[0].get("preferred-name", {}).get(
-                "ce:indexed-name", "") if authors else ""
+            first_author = (
+                authors[0].get("preferred-name", {}).get("ce:indexed-name", "") if authors else ""
+            )
         else:
             first_author = str(creator)
 
         all_authors = []
         for a in entry.get("author", []):
-            all_authors.append({
-                "name": a.get("authname", ""),
-                "auid": a.get("authid", ""),
-            })
+            all_authors.append(
+                {
+                    "name": a.get("authname", ""),
+                    "auid": a.get("authid", ""),
+                }
+            )
 
         sid = entry.get("dc:identifier", "")
         scopus_id = str(sid).replace("SCOPUS_ID:", "") if sid else ""
 
         affs = []
-        for a in (entry.get("affiliation", [])
-                  if isinstance(entry.get("affiliation"), list) else []):
+        for a in entry.get("affiliation", []) if isinstance(entry.get("affiliation"), list) else []:
             affs.append(a.get("affilname", ""))
 
         cited = entry.get("citedby-count", "0")
@@ -517,6 +588,7 @@ def _normalize_entry(entry: dict) -> dict:
 
 # ── Author extraction ─────────────────────────────────────────────────────────
 
+
 def _upsert_authors_from_entry(
     conn: duckdb.DuckDBPyConnection, eid: str, raw_entry: dict, normalized: dict
 ):
@@ -538,12 +610,14 @@ def _upsert_authors_from_entry(
                 if isinstance(afids, dict):
                     afids = [afids]
                 aff_ids = [af.get("$", "") for af in afids if isinstance(af, dict)]
-                authors_to_link.append({
-                    "auid": str(auid),
-                    "name": name,
-                    "seq": seq,
-                    "aff_ids": aff_ids,
-                })
+                authors_to_link.append(
+                    {
+                        "auid": str(auid),
+                        "name": name,
+                        "seq": seq,
+                        "aff_ids": aff_ids,
+                    }
+                )
 
     # Source 2: normalized entry has all_authors[] with auid (from abstract retrieval)
     if not authors_to_link:
@@ -555,12 +629,14 @@ def _upsert_authors_from_entry(
                     name = a.get("name", "")
                     seq = int(a.get("seq", seq_idx) or seq_idx)
                     if auid and name:
-                        authors_to_link.append({
-                            "auid": str(auid),
-                            "name": name,
-                            "seq": seq,
-                            "aff_ids": [],
-                        })
+                        authors_to_link.append(
+                            {
+                                "auid": str(auid),
+                                "name": name,
+                                "seq": seq,
+                                "aff_ids": [],
+                            }
+                        )
 
     # Resolve affiliation names from the entry's affiliation block
     aff_map: dict[str, str] = {}
@@ -574,10 +650,6 @@ def _upsert_authors_from_entry(
 
     # Detect corresponding author(s)
     corresponding_names: set[str] = set()
-
-    def _strip_accents(s: str) -> str:
-        """Normalize accented characters to ASCII for comparison."""
-        return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
 
     # Source 1: from raw entry's item.bibrecord.head.correspondence
     item = raw_entry.get("item", {})
@@ -649,9 +721,13 @@ def _upsert_authors_from_entry(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def add_entries(entries: list[dict], tags: list[str] | None = None,
-                collection: str | None = None,
-                defer_fts_rebuild: bool = False) -> dict:
+
+def add_entries(
+    entries: list[dict],
+    tags: list[str] | None = None,
+    collection: str | None = None,
+    defer_fts_rebuild: bool = False,
+) -> dict:
     """Add one or more articles to the database.
 
     Deduplicates by EID. Updates existing entries with new data.
@@ -689,7 +765,8 @@ def add_entries(entries: list[dict], tags: list[str] | None = None,
             if existing:
                 existing_tags = json.loads(existing[0]) if existing[0] else []
                 merged_tags = sorted(set(existing_tags) | set(tags or []))
-                conn.execute("""
+                conn.execute(
+                    """
                     UPDATE articles SET
                         scopus_id=?, doi=?, title=?, first_author=?, all_authors=?,
                         journal=?, volume=?, issue=?, pages=?, cover_date=?,
@@ -697,23 +774,38 @@ def add_entries(entries: list[dict], tags: list[str] | None = None,
                         source_type=?, affiliations=?, index_keywords=?,
                         subject_areas=?, tags=?, updated_at=?
                     WHERE eid = ?
-                """, [
-                    n.get("scopus_id", ""), n.get("doi", ""), n.get("title", ""),
-                    n.get("first_author", ""), all_authors_json,
-                    n.get("journal", ""), n.get("volume", ""), n.get("issue", ""),
-                    n.get("pages", ""), n.get("cover_date", ""),
-                    n.get("cited_by", 0), n.get("open_access", False),
-                    n.get("abstract", ""), n.get("keywords", ""),
-                    n.get("issn", ""), n.get("source_type", ""),
-                    affiliations_json, idx_kw_json, subj_json,
-                    json.dumps(merged_tags), _now(), eid,
-                ])
+                """,
+                    [
+                        n.get("scopus_id", ""),
+                        n.get("doi", ""),
+                        n.get("title", ""),
+                        n.get("first_author", ""),
+                        all_authors_json,
+                        n.get("journal", ""),
+                        n.get("volume", ""),
+                        n.get("issue", ""),
+                        n.get("pages", ""),
+                        n.get("cover_date", ""),
+                        n.get("cited_by", 0),
+                        n.get("open_access", False),
+                        n.get("abstract", ""),
+                        n.get("keywords", ""),
+                        n.get("issn", ""),
+                        n.get("source_type", ""),
+                        affiliations_json,
+                        idx_kw_json,
+                        subj_json,
+                        json.dumps(merged_tags),
+                        _now(),
+                        eid,
+                    ],
+                )
                 updated += 1
-                _emit_event(conn, "article.updated", "article", eid,
-                            {"title": n.get("title", "")})
+                _emit_event(conn, "article.updated", "article", eid, {"title": n.get("title", "")})
             else:
                 new_tags = sorted(set(tags or []))
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO articles (
                         eid, scopus_id, doi, title, first_author, all_authors,
                         journal, volume, issue, pages, cover_date, cited_by,
@@ -721,21 +813,36 @@ def add_entries(entries: list[dict], tags: list[str] | None = None,
                         affiliations, index_keywords, subject_areas,
                         tags, notes, added_at, updated_at
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """, [
-                    eid, n.get("scopus_id", ""), n.get("doi", ""),
-                    n.get("title", ""), n.get("first_author", ""),
-                    all_authors_json, n.get("journal", ""), n.get("volume", ""),
-                    n.get("issue", ""), n.get("pages", ""),
-                    n.get("cover_date", ""), n.get("cited_by", 0),
-                    n.get("open_access", False), n.get("abstract", ""),
-                    n.get("keywords", ""), n.get("issn", ""),
-                    n.get("source_type", ""), affiliations_json,
-                    idx_kw_json, subj_json,
-                    json.dumps(new_tags), "", _now(), None,
-                ])
+                """,
+                    [
+                        eid,
+                        n.get("scopus_id", ""),
+                        n.get("doi", ""),
+                        n.get("title", ""),
+                        n.get("first_author", ""),
+                        all_authors_json,
+                        n.get("journal", ""),
+                        n.get("volume", ""),
+                        n.get("issue", ""),
+                        n.get("pages", ""),
+                        n.get("cover_date", ""),
+                        n.get("cited_by", 0),
+                        n.get("open_access", False),
+                        n.get("abstract", ""),
+                        n.get("keywords", ""),
+                        n.get("issn", ""),
+                        n.get("source_type", ""),
+                        affiliations_json,
+                        idx_kw_json,
+                        subj_json,
+                        json.dumps(new_tags),
+                        "",
+                        _now(),
+                        None,
+                    ],
+                )
                 added += 1
-                _emit_event(conn, "article.added", "article", eid,
-                            {"title": n.get("title", "")})
+                _emit_event(conn, "article.added", "article", eid, {"title": n.get("title", "")})
 
             _upsert_authors_from_entry(conn, eid, entry, n)
 
@@ -768,8 +875,13 @@ def add_entries(entries: list[dict], tags: list[str] | None = None,
                     [collection, eid],
                 )
                 if not already:
-                    _emit_event(conn, "article.added_to_collection",
-                                "article", eid, {"collection": collection})
+                    _emit_event(
+                        conn,
+                        "article.added_to_collection",
+                        "article",
+                        eid,
+                        {"collection": collection},
+                    )
 
     total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
     if not defer_fts_rebuild and (added or updated):
@@ -786,9 +898,7 @@ def remove_entries(eids: list[str]) -> dict:
     removed = 0
     with _txn(conn):
         for eid in eids:
-            existed = conn.execute(
-                "SELECT 1 FROM articles WHERE eid = ?", [eid]
-            ).fetchone()
+            existed = conn.execute("SELECT 1 FROM articles WHERE eid = ?", [eid]).fetchone()
             conn.execute("DELETE FROM articles WHERE eid = ?", [eid])
             conn.execute("DELETE FROM collection_articles WHERE eid = ?", [eid])
             conn.execute("DELETE FROM article_authors WHERE eid = ?", [eid])
@@ -846,9 +956,7 @@ def list_articles(
     order = sort_map.get(sort, "added_at DESC")
 
     # Get total matching
-    count_row = conn.execute(
-        f"SELECT COUNT(*) FROM articles{where}", params
-    ).fetchone()
+    count_row = conn.execute(f"SELECT COUNT(*) FROM articles{where}", params).fetchone()
     total_matching = count_row[0]
 
     # Get total in DB
@@ -901,8 +1009,7 @@ def search_articles_fts(query: str, limit: int = 50) -> dict:
     columns = [desc[0] for desc in conn.description]
     articles = [_row_to_dict(row, columns) for row in rows]
     total = conn.execute(
-        "SELECT COUNT(*) FROM articles "
-        "WHERE fts_main_articles.match_bm25(eid, ?) IS NOT NULL",
+        "SELECT COUNT(*) FROM articles WHERE fts_main_articles.match_bm25(eid, ?) IS NOT NULL",
         [query],
     ).fetchone()[0]
     return {"articles": articles, "total": total}
@@ -950,8 +1057,9 @@ def tag_articles(eids: list[str], tags: list[str]) -> dict:
             if row:
                 existing = json.loads(row[0]) if row[0] else []
                 merged = sorted(set(existing) | set(tags))
-                conn.execute("UPDATE articles SET tags = ? WHERE eid = ?",
-                             [json.dumps(merged), eid])
+                conn.execute(
+                    "UPDATE articles SET tags = ? WHERE eid = ?", [json.dumps(merged), eid]
+                )
                 tagged += 1
                 _emit_event(conn, "article.tagged", "article", eid, {"tags": list(tags)})
     return {"tagged": tagged, "tags": tags}
@@ -967,8 +1075,10 @@ def untag_articles(eids: list[str], tags: list[str]) -> dict:
             if row:
                 existing = set(json.loads(row[0]) if row[0] else [])
                 existing -= set(tags)
-                conn.execute("UPDATE articles SET tags = ? WHERE eid = ?",
-                             [json.dumps(sorted(existing)), eid])
+                conn.execute(
+                    "UPDATE articles SET tags = ? WHERE eid = ?",
+                    [json.dumps(sorted(existing)), eid],
+                )
                 untagged += 1
                 _emit_event(conn, "article.untagged", "article", eid, {"tags": list(tags)})
     return {"untagged": untagged, "tags": tags}
@@ -998,9 +1108,10 @@ def enrich_articles(enrichments: list[dict]) -> dict:
     with _txn(conn):
         for e in enrichments:
             eid = e.get("eid")
-            if not eid or not conn.execute(
-                "SELECT eid FROM articles WHERE eid = ?", [eid]
-            ).fetchone():
+            if (
+                not eid
+                or not conn.execute("SELECT eid FROM articles WHERE eid = ?", [eid]).fetchone()
+            ):
                 skipped += 1
                 continue
             conn.execute(
@@ -1019,7 +1130,10 @@ def enrich_articles(enrichments: list[dict]) -> dict:
             )
             enriched += 1
             _emit_event(
-                conn, "article.enriched", "article", eid,
+                conn,
+                "article.enriched",
+                "article",
+                eid,
                 {"openalex_id": e.get("openalex_id", "")},
             )
     return {"enriched": enriched, "skipped": skipped}
@@ -1035,7 +1149,95 @@ def get_article(eid: str) -> dict:
     return _row_to_dict(row, columns)
 
 
+def lookup_article(identifier: str) -> dict | None:
+    """Resolve a DOI, Scopus EID, or Scopus ID to a stored article, or None."""
+    ident = (identifier or "").strip()
+    if not ident:
+        return None
+    conn = _get_conn()
+    if ident.startswith("2-s2.0-"):
+        row = conn.execute("SELECT * FROM articles WHERE eid = ?", [ident]).fetchone()
+    elif "/" in ident:
+        doi = ident.lower()
+        for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
+            if doi.startswith(prefix):
+                doi = doi[len(prefix) :]
+        row = conn.execute("SELECT * FROM articles WHERE lower(doi) = ?", [doi]).fetchone()
+    else:
+        sid = ident[len("SCOPUS_ID:") :] if ident.startswith("SCOPUS_ID:") else ident
+        row = conn.execute(
+            "SELECT * FROM articles WHERE scopus_id = ? OR eid = ?",
+            [sid, ident],
+        ).fetchone()
+    if not row:
+        return None
+    columns = [desc[0] for desc in conn.description]
+    return _row_to_dict(row, columns)
+
+
+def record_fulltext_fetch(eid: str, roles: dict | None = None) -> dict:
+    """Stamp ``fulltext_fetched_at`` and optionally update author-role flags.
+
+    Unknown EIDs are skipped — the XML may still live on disk for a paper
+    that is not in the library. ``roles`` is the dict from
+    ``core.fulltext.parse_roles``; empty first/corr lists leave existing
+    flags alone.
+    """
+    conn = _get_conn()
+    row = conn.execute("SELECT eid FROM articles WHERE eid = ?", [eid]).fetchone()
+    if not row:
+        return {"eid": eid, "stamped": False, "roles_updated": 0}
+
+    now = _now()
+    roles = roles or {}
+    first_auids = {str(a) for a in (roles.get("first_auids") or []) if a and str(a).isdigit()}
+    first_names = {n for n in (roles.get("first_names") or []) if n}
+    corr_auids = {str(a) for a in (roles.get("corr_auids") or []) if a and str(a).isdigit()}
+    corr_names = {n for n in (roles.get("corr_names") or []) if n}
+    have_first = bool(first_auids or first_names)
+    have_corr = bool(corr_auids or corr_names)
+
+    links = conn.execute(
+        "SELECT aa.auid, au.name, aa.is_first, aa.is_corresponding "
+        "FROM article_authors aa JOIN authors au ON aa.auid = au.auid "
+        "WHERE aa.eid = ?",
+        [eid],
+    ).fetchall()
+
+    roles_updated = 0
+    with _txn(conn):
+        conn.execute(
+            "UPDATE articles SET fulltext_fetched_at = ?, updated_at = ? WHERE eid = ?",
+            [now, now, eid],
+        )
+        _emit_event(
+            conn,
+            "article.fulltext_fetched",
+            "article",
+            eid,
+            {"roles": bool(have_first or have_corr)},
+        )
+        for auid, name, was_first, was_corr in links:
+            is_first = was_first
+            is_corr = was_corr
+            if have_first:
+                is_first = auid in first_auids or _names_hit(name or "", first_names)
+            if have_corr and (auid in corr_auids or _names_hit(name or "", corr_names)):
+                is_corr = True
+            if is_first == was_first and is_corr == was_corr:
+                continue
+            conn.execute(
+                "UPDATE article_authors SET is_first = ?, is_corresponding = ? "
+                "WHERE eid = ? AND auid = ?",
+                [is_first, is_corr, eid, auid],
+            )
+            roles_updated += 1
+
+    return {"eid": eid, "stamped": True, "roles_updated": roles_updated, "fetched_at": now}
+
+
 # ── Collection management ────────────────────────────────────────────────────
+
 
 def list_collections() -> dict:
     """List all collections with article counts."""
@@ -1055,9 +1257,7 @@ def list_collections() -> dict:
 def create_collection(name: str) -> dict:
     """Create a new empty collection."""
     conn = _get_conn()
-    existing = conn.execute(
-        "SELECT name FROM collections WHERE name = ?", [name]
-    ).fetchone()
+    existing = conn.execute("SELECT name FROM collections WHERE name = ?", [name]).fetchone()
     if existing:
         raise ValueError(f"Collection already exists: {name}")
     with _txn(conn):
@@ -1069,9 +1269,7 @@ def create_collection(name: str) -> dict:
 def delete_collection(name: str) -> dict:
     """Delete a collection (does not delete articles)."""
     conn = _get_conn()
-    existing = conn.execute(
-        "SELECT name FROM collections WHERE name = ?", [name]
-    ).fetchone()
+    existing = conn.execute("SELECT name FROM collections WHERE name = ?", [name]).fetchone()
     if not existing:
         raise ValueError(f"Collection not found: {name}")
     with _txn(conn):
@@ -1092,16 +1290,12 @@ def merge_collections(src: str, dst: str) -> dict:
     if src == dst:
         return {"merged_from": src, "merged_to": dst, "moved": 0, "noop": True}
 
-    src_row = conn.execute(
-        "SELECT name FROM collections WHERE name = ?", [src]
-    ).fetchone()
+    src_row = conn.execute("SELECT name FROM collections WHERE name = ?", [src]).fetchone()
     if not src_row:
         raise ValueError(f"Source collection not found: {src}")
 
     with _txn(conn):
-        conn.execute(
-            "INSERT OR IGNORE INTO collections VALUES (?, ?)", [dst, _now()]
-        )
+        conn.execute("INSERT OR IGNORE INTO collections VALUES (?, ?)", [dst, _now()])
         before = conn.execute(
             "SELECT COUNT(*) FROM collection_articles WHERE collection_name = ?",
             [dst],
@@ -1116,12 +1310,13 @@ def merge_collections(src: str, dst: str) -> dict:
             [dst],
         ).fetchone()[0]
         moved = after - before
-        conn.execute(
-            "DELETE FROM collection_articles WHERE collection_name = ?", [src]
-        )
+        conn.execute("DELETE FROM collection_articles WHERE collection_name = ?", [src])
         conn.execute("DELETE FROM collections WHERE name = ?", [src])
         _emit_event(
-            conn, "collection.merged", "collection", dst,
+            conn,
+            "collection.merged",
+            "collection",
+            dst,
             {"merged_from": src, "moved": moved},
         )
 
@@ -1133,14 +1328,10 @@ def rename_collection(old: str, new: str) -> dict:
     conn = _get_conn()
     if old == new:
         return {"renamed_from": old, "renamed_to": new, "noop": True}
-    src_row = conn.execute(
-        "SELECT created_at FROM collections WHERE name = ?", [old]
-    ).fetchone()
+    src_row = conn.execute("SELECT created_at FROM collections WHERE name = ?", [old]).fetchone()
     if not src_row:
         raise ValueError(f"Collection not found: {old}")
-    if conn.execute(
-        "SELECT 1 FROM collections WHERE name = ?", [new]
-    ).fetchone():
+    if conn.execute("SELECT 1 FROM collections WHERE name = ?", [new]).fetchone():
         raise ValueError(f"Collection already exists: {new}")
 
     created_at = src_row[0]
@@ -1152,7 +1343,10 @@ def rename_collection(old: str, new: str) -> dict:
         )
         conn.execute("DELETE FROM collections WHERE name = ?", [old])
         _emit_event(
-            conn, "collection.renamed", "collection", new,
+            conn,
+            "collection.renamed",
+            "collection",
+            new,
             {"renamed_from": old, "created_at": created_at},
         )
     return {"renamed_from": old, "renamed_to": new, "created_at": created_at}
@@ -1163,33 +1357,27 @@ def add_to_collection(name: str, eids: list[str]) -> dict:
     conn = _get_conn()
     added = 0
     with _txn(conn):
-        created = conn.execute(
-            "SELECT name FROM collections WHERE name = ?", [name]
-        ).fetchone()
+        created = conn.execute("SELECT name FROM collections WHERE name = ?", [name]).fetchone()
         conn.execute("INSERT OR IGNORE INTO collections VALUES (?, ?)", [name, _now()])
         if not created:
             _emit_event(conn, "collection.created", "collection", name, {})
 
         for eid in eids:
-            exists = conn.execute(
-                "SELECT eid FROM articles WHERE eid = ?", [eid]
-            ).fetchone()
+            exists = conn.execute("SELECT eid FROM articles WHERE eid = ?", [eid]).fetchone()
             if not exists:
                 continue
             already = conn.execute(
-                "SELECT 1 FROM collection_articles "
-                "WHERE collection_name = ? AND eid = ?",
+                "SELECT 1 FROM collection_articles WHERE collection_name = ? AND eid = ?",
                 [name, eid],
             ).fetchone()
             if already:
                 continue
             try:
-                conn.execute(
-                    "INSERT INTO collection_articles VALUES (?, ?)", [name, eid]
-                )
+                conn.execute("INSERT INTO collection_articles VALUES (?, ?)", [name, eid])
                 added += 1
-                _emit_event(conn, "article.added_to_collection",
-                            "article", eid, {"collection": name})
+                _emit_event(
+                    conn, "article.added_to_collection", "article", eid, {"collection": name}
+                )
             except duckdb.ConstraintException:
                 pass
     total = conn.execute(
@@ -1201,17 +1389,14 @@ def add_to_collection(name: str, eids: list[str]) -> dict:
 def remove_from_collection(name: str, eids: list[str]) -> dict:
     """Remove articles from a collection."""
     conn = _get_conn()
-    existing = conn.execute(
-        "SELECT name FROM collections WHERE name = ?", [name]
-    ).fetchone()
+    existing = conn.execute("SELECT name FROM collections WHERE name = ?", [name]).fetchone()
     if not existing:
         raise ValueError(f"Collection not found: {name}")
     removed = 0
     with _txn(conn):
         for eid in eids:
             was_in = conn.execute(
-                "SELECT 1 FROM collection_articles "
-                "WHERE collection_name = ? AND eid = ?",
+                "SELECT 1 FROM collection_articles WHERE collection_name = ? AND eid = ?",
                 [name, eid],
             ).fetchone()
             conn.execute(
@@ -1220,8 +1405,9 @@ def remove_from_collection(name: str, eids: list[str]) -> dict:
             )
             removed += 1
             if was_in:
-                _emit_event(conn, "article.removed_from_collection",
-                            "article", eid, {"collection": name})
+                _emit_event(
+                    conn, "article.removed_from_collection", "article", eid, {"collection": name}
+                )
     total = conn.execute(
         "SELECT COUNT(*) FROM collection_articles WHERE collection_name = ?", [name]
     ).fetchone()[0]
@@ -1229,6 +1415,7 @@ def remove_from_collection(name: str, eids: list[str]) -> dict:
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
+
 
 def stats() -> dict:
     """Get database statistics."""
@@ -1271,6 +1458,7 @@ def stats() -> dict:
 
 # ── Author management ────────────────────────────────────────────────────────
 
+
 def list_authors(
     query: str | None = None,
     sort: str = "papers",
@@ -1301,7 +1489,8 @@ def list_authors(
     }
     order = sort_map.get(sort, "paper_count DESC")
 
-    rows = conn.execute(f"""
+    rows = conn.execute(
+        f"""
         SELECT a.auid, a.name, a.affiliations, a.h_index, a.document_count,
                a.cited_by_count, a.orcid, a.notes, a.added_at,
                COUNT(aa.eid) as paper_count
@@ -1312,26 +1501,43 @@ def list_authors(
                  a.cited_by_count, a.orcid, a.notes, a.added_at
         ORDER BY {order}
         LIMIT ?
-    """, params + [limit]).fetchall()
+    """,
+        params + [limit],
+    ).fetchall()
 
-    total = conn.execute(f"SELECT COUNT(*) FROM authors{'  WHERE LOWER(name) LIKE ?' if query else ''}", params).fetchone()[0]
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM authors{'  WHERE LOWER(name) LIKE ?' if query else ''}", params
+    ).fetchone()[0]
 
     authors = []
     for row in rows:
-        auid, name, affiliations, h_index, doc_count, cited_by, orcid, notes, added_at, paper_count = row
+        (
+            auid,
+            name,
+            affiliations,
+            h_index,
+            doc_count,
+            cited_by,
+            orcid,
+            notes,
+            added_at,
+            paper_count,
+        ) = row
         affs = json.loads(affiliations) if affiliations else []
-        authors.append({
-            "auid": auid,
-            "name": name,
-            "affiliations": affs,
-            "h_index": h_index,
-            "document_count": doc_count,
-            "cited_by_count": cited_by,
-            "orcid": orcid or "",
-            "notes": notes or "",
-            "added_at": added_at or "",
-            "paper_count": paper_count,
-        })
+        authors.append(
+            {
+                "auid": auid,
+                "name": name,
+                "affiliations": affs,
+                "h_index": h_index,
+                "document_count": doc_count,
+                "cited_by_count": cited_by,
+                "orcid": orcid or "",
+                "notes": notes or "",
+                "added_at": added_at or "",
+                "paper_count": paper_count,
+            }
+        )
 
     return {"authors": authors, "total": total}
 
@@ -1356,37 +1562,56 @@ def get_author(auid: str) -> dict:
     if not row:
         raise ValueError(f"Author not found: {auid}")
 
-    (auid, name, affiliations, h_index, doc_count, cited_by, citation_count,
-     coauthor_count, orcid, subject_areas_json, notes, added_at, fetched_at) = row
+    (
+        auid,
+        name,
+        affiliations,
+        h_index,
+        doc_count,
+        cited_by,
+        citation_count,
+        coauthor_count,
+        orcid,
+        subject_areas_json,
+        notes,
+        added_at,
+        fetched_at,
+    ) = row
     affs = json.loads(affiliations) if affiliations else []
     subj_areas = json.loads(subject_areas_json) if subject_areas_json else []
 
     # Get their articles
-    article_rows = conn.execute("""
+    article_rows = conn.execute(
+        """
         SELECT a.eid, a.title, a.journal, a.cover_date, a.cited_by, a.doi,
                aa.seq, aa.is_first, aa.is_corresponding
         FROM articles a
         JOIN article_authors aa ON a.eid = aa.eid
         WHERE aa.auid = ?
         ORDER BY a.cover_date DESC
-    """, [auid]).fetchall()
+    """,
+        [auid],
+    ).fetchall()
 
     articles = []
     for eid, title, journal, cover_date, cited_by, doi, seq, is_first, is_corr in article_rows:
-        articles.append({
-            "eid": eid,
-            "title": title,
-            "journal": journal,
-            "cover_date": cover_date,
-            "cited_by": cited_by,
-            "doi": doi,
-            "author_position": seq,
-            "is_first_author": bool(is_first),
-            "is_corresponding": bool(is_corr),
-        })
+        articles.append(
+            {
+                "eid": eid,
+                "title": title,
+                "journal": journal,
+                "cover_date": cover_date,
+                "cited_by": cited_by,
+                "doi": doi,
+                "author_position": seq,
+                "is_first_author": bool(is_first),
+                "is_corresponding": bool(is_corr),
+            }
+        )
 
     # Find co-authors (other authors who share articles)
-    coauthor_rows = conn.execute("""
+    coauthor_rows = conn.execute(
+        """
         SELECT au.auid, au.name, COUNT(*) as shared_papers
         FROM article_authors aa1
         JOIN article_authors aa2 ON aa1.eid = aa2.eid AND aa1.auid != aa2.auid
@@ -1395,7 +1620,9 @@ def get_author(auid: str) -> dict:
         GROUP BY au.auid, au.name
         ORDER BY shared_papers DESC
         LIMIT 20
-    """, [auid]).fetchall()
+    """,
+        [auid],
+    ).fetchall()
 
     coauthors = [
         {"auid": ca_auid, "name": ca_name, "shared_papers": cnt}
@@ -1478,11 +1705,13 @@ def fetch_author_profile(auid: str) -> dict:
     if isinstance(subj_block, dict):
         for area in subj_block.get("subject-area", []):
             if isinstance(area, dict):
-                subject_areas.append({
-                    "name": area.get("$", ""),
-                    "code": area.get("@code", ""),
-                    "abbrev": area.get("@abbrev", ""),
-                })
+                subject_areas.append(
+                    {
+                        "name": area.get("$", ""),
+                        "code": area.get("@code", ""),
+                        "abbrev": area.get("@abbrev", ""),
+                    }
+                )
 
     # Parse current affiliation
     aff_current = profile.get("affiliation-current", {})
@@ -1490,14 +1719,16 @@ def fetch_author_profile(auid: str) -> dict:
         aff_current = aff_current.get("affiliation", {})
     affiliations = []
     if isinstance(aff_current, dict):
-        aff_name = (aff_current.get("ip-doc", {}).get("afdispname", "")
-                    or aff_current.get("ip-doc", {}).get("preferred-name", {}).get("$", ""))
+        aff_name = aff_current.get("ip-doc", {}).get("afdispname", "") or aff_current.get(
+            "ip-doc", {}
+        ).get("preferred-name", {}).get("$", "")
         if aff_name:
             affiliations.append(aff_name)
     elif isinstance(aff_current, list):
         for afc in aff_current:
-            aff_name = (afc.get("ip-doc", {}).get("afdispname", "")
-                        or afc.get("ip-doc", {}).get("preferred-name", {}).get("$", ""))
+            aff_name = afc.get("ip-doc", {}).get("afdispname", "") or afc.get("ip-doc", {}).get(
+                "preferred-name", {}
+            ).get("$", "")
             if aff_name:
                 affiliations.append(aff_name)
 
@@ -1507,29 +1738,54 @@ def fetch_author_profile(auid: str) -> dict:
 
     with _txn(conn):
         if existing:
-            conn.execute("""
+            conn.execute(
+                """
                 UPDATE authors SET
                     name=?, affiliations=?, h_index=?, document_count=?,
                     cited_by_count=?, citation_count=?, coauthor_count=?,
                     orcid=?, subject_areas=?, updated_at=?, fetched_at=?
                 WHERE auid=?
-            """, [
-                name, json.dumps(affiliations), h_index, doc_count,
-                cited_by, citation_count, coauthor_count,
-                orcid, json.dumps(subject_areas), _now(), _now(), auid,
-            ])
+            """,
+                [
+                    name,
+                    json.dumps(affiliations),
+                    h_index,
+                    doc_count,
+                    cited_by,
+                    citation_count,
+                    coauthor_count,
+                    orcid,
+                    json.dumps(subject_areas),
+                    _now(),
+                    _now(),
+                    auid,
+                ],
+            )
         else:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO authors (
                     auid, name, affiliations, h_index, document_count,
                     cited_by_count, citation_count, coauthor_count,
                     orcid, subject_areas, notes, added_at, fetched_at
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, [
-                auid, name, json.dumps(affiliations), h_index, doc_count,
-                cited_by, citation_count, coauthor_count,
-                orcid, json.dumps(subject_areas), "", _now(), _now(),
-            ])
+            """,
+                [
+                    auid,
+                    name,
+                    json.dumps(affiliations),
+                    h_index,
+                    doc_count,
+                    cited_by,
+                    citation_count,
+                    coauthor_count,
+                    orcid,
+                    json.dumps(subject_areas),
+                    "",
+                    _now(),
+                    _now(),
+                ],
+            )
         _emit_event(conn, "author.profile_fetched", "author", auid, {"name": name})
 
     return {
@@ -1570,7 +1826,8 @@ def find_coauthors(auid: str) -> dict:
         raise ValueError(f"Author not found: {auid}")
     author_name = row[0]
 
-    rows = conn.execute("""
+    rows = conn.execute(
+        """
         SELECT au.auid, au.name, au.affiliations, COUNT(*) as shared_papers
         FROM article_authors aa1
         JOIN article_authors aa2 ON aa1.eid = aa2.eid AND aa1.auid != aa2.auid
@@ -1578,17 +1835,21 @@ def find_coauthors(auid: str) -> dict:
         WHERE aa1.auid = ?
         GROUP BY au.auid, au.name, au.affiliations
         ORDER BY shared_papers DESC
-    """, [auid]).fetchall()
+    """,
+        [auid],
+    ).fetchall()
 
     coauthors = []
     for ca_auid, ca_name, ca_affs, cnt in rows:
         affs = json.loads(ca_affs) if ca_affs else []
-        coauthors.append({
-            "auid": ca_auid,
-            "name": ca_name,
-            "affiliations": affs,
-            "shared_papers": cnt,
-        })
+        coauthors.append(
+            {
+                "auid": ca_auid,
+                "name": ca_name,
+                "affiliations": affs,
+                "shared_papers": cnt,
+            }
+        )
 
     return {
         "author": {"auid": auid, "name": author_name},

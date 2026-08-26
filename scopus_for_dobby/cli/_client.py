@@ -35,17 +35,36 @@ from .serve import daemon_endpoint
 # ``db_mod`` must appear here and be implemented by *both* backends —
 # otherwise a call would silently work in-process and fail against the
 # daemon (or vice versa).
-_API = frozenset({
-    "list_articles", "get_article", "add_entries", "remove_entries",
-    "enrich_articles",
-    "tag_articles", "untag_articles", "set_note",
-    "list_collections", "create_collection", "delete_collection",
-    "add_to_collection", "remove_from_collection",
-    "merge_collections", "rename_collection",
-    "list_authors", "get_author", "set_author_note", "find_coauthors",
-    "fetch_author_profile",
-    "search_articles_fts", "search_articles_like", "stats", "rebuild_fts",
-})
+_API = frozenset(
+    {
+        "list_articles",
+        "get_article",
+        "lookup_article",
+        "add_entries",
+        "remove_entries",
+        "enrich_articles",
+        "record_fulltext_fetch",
+        "tag_articles",
+        "untag_articles",
+        "set_note",
+        "list_collections",
+        "create_collection",
+        "delete_collection",
+        "add_to_collection",
+        "remove_from_collection",
+        "merge_collections",
+        "rename_collection",
+        "list_authors",
+        "get_author",
+        "set_author_note",
+        "find_coauthors",
+        "fetch_author_profile",
+        "search_articles_fts",
+        "search_articles_like",
+        "stats",
+        "rebuild_fts",
+    }
+)
 
 # Resolved once per process: ``daemon_endpoint()`` reads two files and may
 # probe a TCP port, which is far too expensive to repeat on every call.

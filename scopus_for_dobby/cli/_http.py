@@ -73,17 +73,28 @@ def _delete(path: str, body: dict | None = None) -> Any:
 
 # ── Articles ──────────────────────────────────────────────────────────────────
 def list_articles(*, tag=None, collection=None, query=None, sort="added", limit=50):
-    return _get("/articles", tag=tag, collection=collection, query=query,
-                sort=sort, limit=limit)
+    return _get("/articles", tag=tag, collection=collection, query=query, sort=sort, limit=limit)
 
 
 def get_article(eid: str):
     return _get(f"/articles/{eid}")
 
 
+def lookup_article(identifier: str):
+    with _client() as c:
+        r = c.get("/articles/lookup", params={"identifier": identifier})
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json()
+
+
+def record_fulltext_fetch(eid: str, roles=None):
+    return _post("/articles/fulltext", {"eid": eid, "roles": roles or {}})
+
+
 def add_entries(entries, *, tags=None, collection=None):
-    return _post("/articles", {"entries": entries, "tags": tags,
-                               "collection": collection})
+    return _post("/articles", {"entries": entries, "tags": tags, "collection": collection})
 
 
 def remove_entries(eids):

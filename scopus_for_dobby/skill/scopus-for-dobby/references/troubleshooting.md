@@ -73,11 +73,14 @@ no stemming, no ranking. Try a shorter substring.
 Weekly quota exhausted (per-endpoint limits in `search.md`). The error shows the
 reset time. `auth quota` reports the cached remaining budget without spending a
 call. OpenAlex work (`openalex enrich/graph`) still runs — separate, free quota.
+A 429 during `fulltext` is the **Article Retrieval** bucket (`fulltext.md`), not
+the abstract one; remaining items in that batch are skipped.
 
 **401/403 from Scopus.**
 Key invalid or tier mismatch — `auth status` tests connectivity and shows the
 tier. Institutional features need `auth upgrade --inst-token ...` and usually the
-institution network/VPN.
+institution network/VPN. On `fulltext`, 401/403 on one paper means that item is
+not entitled — the rest of the batch continues (`fulltext.md`).
 
 **`Binder Error: Referenced update column openalex_id not found`.**
 A database that missed a schema migration. Fixed — any recent version repairs the

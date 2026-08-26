@@ -6,6 +6,7 @@ from ~/.scopus-for-dobby/config.json and respects Elsevier rate limits.
 Base URL: https://api.elsevier.com
 """
 
+import contextlib
 import json
 import logging
 import time
@@ -24,12 +25,22 @@ BASE_URL = "https://api.elsevier.com"
 _THROTTLE = {
     "/content/search/scopus": 0.12,  # 9 req/sec
     "/content/abstract": 0.12,  # 9 req/sec
+    "/content/article": 0.11,  # ScienceDirect Article Retrieval: 10 req/sec
+    "/content/object": 0.11,  # object (figure) retrieval: same 10 req/sec ceiling
     "/content/author/author_id": 0.35,  # 3 req/sec
     "/content/search/author": 0.55,  # 2 req/sec
     "/content/abstract/citations": 0.12,  # ~9 req/sec
 }
 
 _last_call: dict[str, float] = {}
+
+
+class QuotaExceeded(RuntimeError):
+    """Weekly API quota exhausted (HTTP 429 with QUOTA_EXCEEDED)."""
+
+    def __init__(self, message: str, reset: str | None = None):
+        super().__init__(message)
+        self.reset = reset
 
 
 # ── Config I/O ────────────────────────────────────────────────────────────────
@@ -53,17 +64,38 @@ def save_config(config: dict):
     CONFIG_FILE.chmod(0o600)
 
 
-def _cache_quota(remaining: int, reset: str | None):
+def _quota_bucket(endpoint: str) -> str:
+    """Name the Elsevier quota this endpoint draws from.
+
+    Quotas are per API, not per key. Mixing Article Retrieval remaining into
+    the Scopus Abstract figure would tell an agent the wrong budget.
+    """
+    if "/content/article" in endpoint and "/content/abstract" not in endpoint:
+        return "sciencedirect-article"
+    if "/content/abstract" in endpoint:
+        return "scopus-abstract"
+    if "/content/search/scopus" in endpoint:
+        return "scopus-search"
+    return "scopus"
+
+
+def _cache_quota(remaining: int, reset: str | None, *, bucket: str = "scopus"):
     """Cache the latest rate-limit headers to config so other commands can
     report quota without making an API call. Best-effort: failures are ignored.
     """
     try:
         config = load_config()
-        config["last_quota"] = {
+        entry = {
             "remaining": remaining,
             "reset": reset,
             "updated_at": int(time.time()),
+            "api": bucket,
         }
+        # Last call overall — what `auth quota` has always shown.
+        config["last_quota"] = entry
+        buckets = config.get("last_quotas") or {}
+        buckets[bucket] = entry
+        config["last_quotas"] = buckets
         save_config(config)
     except OSError as e:
         logger.debug("Failed to cache quota: %s", e)
@@ -95,7 +127,7 @@ def _throttle(endpoint: str):
 # ── Core request ──────────────────────────────────────────────────────────────
 
 
-def _build_headers(config: dict) -> dict:
+def _build_headers(config: dict, accept: str = "application/json") -> dict:
     """Build auth headers from config."""
     api_key = config.get("api_key", "")
     if not api_key:
@@ -105,7 +137,7 @@ def _build_headers(config: dict) -> dict:
 
     headers = {
         "X-ELS-APIKey": api_key,
-        "Accept": "application/json",
+        "Accept": accept,
     }
 
     inst_token = config.get("inst_token", "")
@@ -182,20 +214,66 @@ def api_get(endpoint: str, params: dict | None = None, config: dict | None = Non
             "remaining": int(remaining),
             "reset": reset,
         }
-        _cache_quota(int(remaining), reset)
+        _cache_quota(int(remaining), reset, bucket=_quota_bucket(endpoint))
 
     return result
 
 
 def api_get_raw(
-    endpoint: str, params: dict | None = None, config: dict | None = None
+    endpoint: str,
+    params: dict | None = None,
+    config: dict | None = None,
+    *,
+    accept: str = "application/json",
+    timeout: int = 30,
 ) -> requests.Response:
     """Make a GET request and return the raw response (for header inspection)."""
     if config is None:
         config = load_config()
 
-    headers = _build_headers(config)
+    headers = _build_headers(config, accept=accept)
     _throttle(endpoint)
 
     url = f"{BASE_URL}{endpoint}"
-    return requests.get(url, headers=headers, params=params, timeout=30)
+    return requests.get(url, headers=headers, params=params, timeout=timeout)
+
+
+def request_elsevier(
+    endpoint: str,
+    params: dict | None = None,
+    *,
+    accept: str = "text/xml",
+    timeout: int = 60,
+    config: dict | None = None,
+) -> dict:
+    """GET an Elsevier endpoint and return status+body without raising on 4xx.
+
+    401/403/404 are per-document outcomes for Article Retrieval (not entitled,
+    not an Elsevier paper). 429 still raises: the rest of a batch cannot
+    usefully continue.
+
+    Returns ``{"status": int, "text": str, "remaining": int|None, "reset": str|None}``.
+    """
+    resp = api_get_raw(endpoint, params=params, config=config, accept=accept, timeout=timeout)
+    remaining = resp.headers.get("X-RateLimit-Remaining")
+    reset = resp.headers.get("X-RateLimit-Reset")
+    if remaining is not None:
+        with contextlib.suppress(ValueError, TypeError):
+            _cache_quota(int(remaining), reset, bucket=_quota_bucket(endpoint))
+
+    if resp.status_code == 429:
+        reset_msg = ""
+        if reset:
+            try:
+                reset_time = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(int(reset)))
+                reset_msg = f" Quota resets at {reset_time}."
+            except (ValueError, OSError):
+                pass
+        raise QuotaExceeded(f"Rate limit exceeded.{reset_msg}", reset=reset)
+
+    return {
+        "status": resp.status_code,
+        "text": resp.text or "",
+        "remaining": int(remaining) if remaining is not None else None,
+        "reset": reset,
+    }

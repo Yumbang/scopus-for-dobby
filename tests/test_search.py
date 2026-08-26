@@ -52,7 +52,7 @@ def stub_config(monkeypatch):
     # search.py imports load_config by reference, so patch its namespace too.
     monkeypatch.setattr(search_mod, "load_config", lambda: cfg)
     monkeypatch.setattr(api_client, "_throttle", lambda endpoint: None)
-    monkeypatch.setattr(api_client, "_cache_quota", lambda remaining, reset: None)
+    monkeypatch.setattr(api_client, "_cache_quota", lambda remaining, reset, **k: None)
 
 
 @pytest.fixture
@@ -214,7 +214,7 @@ class TestRateLimit:
         monkeypatch.setattr(
             api_client,
             "_cache_quota",
-            lambda remaining, reset: cached.update(remaining=remaining, reset=reset),
+            lambda remaining, reset, **k: cached.update(remaining=remaining, reset=reset),
         )
         capture_get["response"] = FakeResponse(
             json_data=_search_results(),

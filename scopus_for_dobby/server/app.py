@@ -128,12 +128,23 @@ def build_app(idle_timeout: float | None = None):
             tag=tag, collection=collection, query=query, sort=sort, limit=limit
         )
 
+    @app.get("/articles/lookup")
+    def lookup_article(identifier: str):
+        row = adb.lookup_article(identifier)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Article not found: {identifier}")
+        return row
+
     @app.get("/articles/{eid}")
     def get_article(eid: str):
         try:
             return adb.get_article(eid)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @app.post("/articles/fulltext")
+    def record_fulltext(body: dict = Body(...)):
+        return adb.record_fulltext_fetch(body.get("eid", ""), roles=body.get("roles"))
 
     @app.post("/articles")
     def add_articles(body: dict = Body(...)):

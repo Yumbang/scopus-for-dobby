@@ -109,4 +109,4 @@ openalex graph --collection review -o map.graphml # graph needs explicit --colle
 
 Pass `--collection` explicitly on the search too: `search`/`search-all` do **not** honor the working collection — without `-c`, results land in the DB but in no collection, and the enrich/graph steps would operate on an empty set.
 
-Open `map.graphml` in Gephi: cluster layout reveals research themes; high in-degree non-seed nodes are **key papers the collection cites but doesn't contain** — prime candidates for the next `abstract`/`search` round. That closes the loop: graph → spot gaps → fetch → re-graph.
+Open `map.graphml` in Gephi: cluster layout reveals research themes; high in-degree non-seed nodes are **key papers the collection cites but doesn't contain** — prime candidates for the next `abstract`/`search` round. To **read** a chosen paper's methods or claims, that is `fulltext` (ask first unless autonomous — `fulltext.md`). That closes the loop: graph → spot gaps → fetch metadata → (if needed) body → re-graph.

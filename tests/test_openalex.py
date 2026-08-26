@@ -366,9 +366,9 @@ class TestEnrichArticles:
 
 
 class TestSchemaMigration:
-    def test_fresh_db_is_v2_with_columns(self, tmp_db):
+    def test_fresh_db_is_current_with_columns(self, tmp_db):
         conn = db_mod._get_conn()
-        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == 2
+        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == db_mod.SCHEMA_VERSION
         cols = {r[1] for r in conn.execute("PRAGMA table_info('articles')").fetchall()}
         assert {
             "openalex_id",
@@ -377,10 +377,11 @@ class TestSchemaMigration:
             "openalex_cited_by",
             "openalex_topics",
             "openalex_enriched_at",
+            "fulltext_fetched_at",
         } <= cols
 
-    def test_v1_db_migrates_to_v2(self, tmp_db):
-        # Build a fresh (v2) DB, then strip it back to v1 shape.
+    def test_v1_db_migrates_to_current(self, tmp_db):
+        # Build a fresh DB, then strip it back to v1 shape.
         conn = db_mod._get_conn()
         for col in (
             "openalex_id",
@@ -389,6 +390,7 @@ class TestSchemaMigration:
             "openalex_cited_by",
             "openalex_topics",
             "openalex_enriched_at",
+            "fulltext_fetched_at",
         ):
             conn.execute(f"ALTER TABLE articles DROP COLUMN {col}")  # noqa: S608
         conn.execute("UPDATE schema_meta SET version = 1")
@@ -396,9 +398,10 @@ class TestSchemaMigration:
 
         db_mod._ensure_schema(conn)
 
-        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == 2
+        assert conn.execute("SELECT version FROM schema_meta").fetchone()[0] == db_mod.SCHEMA_VERSION
         cols = {r[1] for r in conn.execute("PRAGMA table_info('articles')").fetchall()}
         assert "openalex_id" in cols
+        assert "fulltext_fetched_at" in cols
 
 
 # ── Rate limiting and authentication ──────────────────────────────────────────
