@@ -321,6 +321,10 @@ class TestMultipleSkills:
         assert "citation-analysis skill" in d["scopus-for-dobby"] or True  # base skill
         assert "scopus-for-dobby skill" in d["citation-analysis"]
         assert "citation-analysis" in d["corpus-profiling"]
+        # ...and back the other way. Both claim "themes" in their positives, so
+        # the skill that infers them from citation links has to say so is not
+        # the one that counts keyword frequencies.
+        assert "corpus-profiling" in d["citation-analysis"]
         assert "paper-fulltext" in d["scopus-for-dobby"]
         assert "paper-fulltext" in d["citation-analysis"]
         assert "paper-fulltext" in d["corpus-profiling"]
