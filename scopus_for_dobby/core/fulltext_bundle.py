@@ -19,7 +19,7 @@ from scopus_for_dobby.core.mathml_latex import mathml_to_latex
 from scopus_for_dobby.utils.api_client import QuotaExceeded, api_get_raw
 
 # Bump when the markdown renderer changes so cached bundles regenerate.
-BUNDLE_VERSION = 4
+BUNDLE_VERSION = 5
 
 _SAFE_SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -76,9 +76,8 @@ def inline(el: ET.Element) -> str:
         parts.append(el.text)
     for c in el:
         name = _local(c.tag)
-        if name in {"cross-ref", "cross-out"}:
-            label = "".join(c.itertext()).strip() or c.get("refid") or ""
-            parts.append(label)
+        if name in {"cross-ref", "cross-refs", "cross-out"}:
+            parts.append(_xref(c))
         elif name == "math":
             parts.append(f"${mathml_to_latex(c)}$")
         elif name in {"display", "formula", "display-formula"}:
@@ -98,6 +97,27 @@ def inline(el: ET.Element) -> str:
         if c.tail:
             parts.append(c.tail)
     return "".join(parts)
+
+
+def _xref(el: ET.Element) -> str:
+    """Render a cross-reference, keeping the id it points at.
+
+    The visible text is often just a number ("65"), which on its own is a dead
+    end — the link is the only thing connecting a claim to the work it cites,
+    or to the figure it discusses. ``ce:cross-refs`` may carry several
+    space-separated ids; markdown has one target per link, so the rest ride in
+    the title attribute rather than being dropped.
+    """
+    label = "".join(el.itertext()).strip()
+    ids = (el.get("refid") or "").split()
+    if not ids:
+        return label
+    if not label:
+        label = ids[0]
+    target = f"#{ids[0]}"
+    if len(ids) > 1:
+        return f'[{label}]({target} "{" ".join(ids)}")'
+    return f"[{label}]({target})"
 
 
 def _display_math(el: ET.Element) -> str:
@@ -308,6 +328,101 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
+def _colspec_map(tgroup: ET.Element) -> dict[str, int]:
+    """``colname`` -> zero-based column index, from the CALS colspec list."""
+    out: dict[str, int] = {}
+    n = 0
+    for c in tgroup:
+        if _local(c.tag) != "colspec":
+            continue
+        name = c.get("colname") or ""
+        num = c.get("colnum")
+        idx = int(num) - 1 if (num or "").isdigit() else n
+        if name:
+            out[name] = idx
+        n = idx + 1
+    return out
+
+
+def _span(entry: ET.Element, cols: dict[str, int]) -> int:
+    """How many columns this entry covers (CALS ``namest``/``nameend``)."""
+    start, end = entry.get("namest"), entry.get("nameend")
+    if not start or not end or start not in cols or end not in cols:
+        return 1
+    return max(1, cols[end] - cols[start] + 1)
+
+
+def _table_grid(tgroup: ET.Element) -> list[list[str]]:
+    """Expand a CALS tgroup into a rectangular grid.
+
+    Markdown cannot express colspan/rowspan, so the answer is not to encode
+    them but to undo them: every cell is written into each position it covers,
+    which is what the printed table means anyway. Reading entries in document
+    order instead — the obvious approach — silently shifts values under the
+    wrong headers whenever a row carries a span, and shifts different rows by
+    different amounts, so the damage is invisible in the output.
+
+    Expansion is applied only when rows disagree on how many entries they
+    hold. That disagreement is what proves a span is load-bearing: a rowspan
+    makes later rows drop the cell it covers. When every row agrees, the spans
+    are cosmetic and expanding them corrupts a table that was already right.
+    """
+    cols = _colspec_map(tgroup)
+    rows_el = [r for r in tgroup.iter() if _local(r.tag) == "row"]
+    counts = {sum(1 for e in r if _local(e.tag) == "entry") for r in rows_el}
+    counts.discard(0)
+    if len(counts) == 1:
+        # Every row already holds the same number of entries, so the row
+        # structure is rectangular and the spans are typographic padding —
+        # publishers stretch cells to fill a wider physical grid, and header
+        # and body often pad differently. Expanding those would duplicate
+        # values and invent a column. Trust the entries.
+        return [
+            [_text(e) for e in r if _local(e.tag) == "entry"]
+            for r in rows_el
+            if any(_local(e.tag) == "entry" for e in r)
+        ]
+
+    width = 0
+    if (tgroup.get("cols") or "").isdigit():
+        width = int(tgroup.get("cols"))
+    grid: list[list[str]] = []
+    # column -> [remaining rows, text] carried down by a ``morerows`` cell
+    pending: dict[int, list] = {}
+    for row in tgroup.iter():
+        if _local(row.tag) != "row":
+            continue
+        line: dict[int, str] = {}
+        for col, held in list(pending.items()):
+            if held[0] > 0:
+                line[col] = held[1]
+                held[0] -= 1
+                if held[0] == 0:
+                    del pending[col]
+        cursor = 0
+        for entry in row:
+            if _local(entry.tag) != "entry":
+                continue
+            start = cols.get(entry.get("namest") or "", None)
+            if start is None:
+                while cursor in line:
+                    cursor += 1
+                start = cursor
+            text = _text(entry)
+            width_here = _span(entry, cols)
+            more = entry.get("morerows")
+            more = int(more) if (more or "").isdigit() else 0
+            for i in range(width_here):
+                line[start + i] = text
+                if more:
+                    pending[start + i] = [more, text]
+            cursor = start + width_here
+        if line:
+            width = max(width, max(line) + 1)
+            grid.append(line)
+    return [[row.get(i, "") for i in range(width)] for row in grid]
+
+
 def _table_md(table: ET.Element) -> str:
     label = _text(_child(table, "label"))
     caption = _text(_child(table, "caption"))
@@ -321,17 +436,10 @@ def _table_md(table: ET.Element) -> str:
     tgroup = _find(table, "tgroup")
     if tgroup is None:
         return "\n".join(lines).rstrip() + "\n"
-    rows: list[list[str]] = []
-    for row in tgroup.iter():
-        if _local(row.tag) != "row":
-            continue
-        cells = [_text(e) for e in row if _local(e.tag) == "entry"]
-        if cells:
-            rows.append(cells)
+    rows = _table_grid(tgroup)
     if not rows:
         return "\n".join(lines).rstrip() + "\n"
-    width = max(len(r) for r in rows)
-    norm = [[_cell(c) for c in r] + [""] * (width - len(r)) for r in rows]
+    norm = [[_cell(c) for c in r] for r in rows]
     header, body = norm[0], norm[1:]
     lines.append("| " + " | ".join(header) + " |")
     lines.append("| " + " | ".join("---" for _ in header) + " |")
@@ -429,7 +537,7 @@ def _render_figures(
             path.write_bytes(blob)
             path.chmod(0o600)
         cap_rel = f"figures/{fid}.caption.md"
-        cap_lines = [f"# {label}", ""]
+        cap_lines = [f'# <a id="{fid}"></a>{label}', ""]
         if caption:
             cap_lines += [caption, ""]
         if image_rel:
@@ -483,7 +591,9 @@ def _render_references(dest: Path, root: ET.Element) -> str | None:
         body = body or _text(ref)
         if not body:
             continue
-        entries.append(f"- {label} {body}".strip() if label else f"- {body}")
+        # The anchor is what the [65](#bb0325) links in the section text resolve to.
+        anchor = f'<a id="{ref.get("id")}"></a>' if ref.get("id") else ""
+        entries.append(f"- {anchor}{label} {body}".strip() if label else f"- {anchor}{body}")
     if not entries:
         return None
     _write(dest / "references.md", "\n".join(["# References", "", *entries]) + "\n")

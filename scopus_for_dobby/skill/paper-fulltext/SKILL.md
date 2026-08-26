@@ -118,7 +118,17 @@ written before it existed. Treat a missing key as "older bundle, regenerate", ne
 
 `manifest.sections` is a nested outline: each node has `title`, `file`, and `children`.
 A parent section's `.md` holds only its own paragraphs — subsection text lives in the
-child files. Math is LaTeX (`$…$` inline, `$$…$$` display, `\tag{n}` for numbered
+child files.
+
+Cross-references keep their target: `[Fig. 1](#fig0001)`, `[65](#bb0325)`. That link is
+often the only thing tying a claim to what it cites — numeric citation styles render as a
+bare number otherwise — so use it to jump to `references.md` or a figure caption, and to
+answer "where does this paper cite X". A link carrying several ids lists the rest in its
+title attribute.
+
+Tables in `tables/*.md` are rectangular: every row has the same number of columns and each
+value sits under its own header, with a row-spanning label repeated down the rows it covers
+rather than left blank. Read them as data — no cell inherits meaning from a row above. Math is LaTeX (`$…$` inline, `$$…$$` display, `\tag{n}` for numbered
 equations). Numbered protocol steps survive as markdown list items.
 
 Do not call the API again for the same EID unless `--force`.

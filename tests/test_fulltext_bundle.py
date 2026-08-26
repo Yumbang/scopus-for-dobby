@@ -230,3 +230,124 @@ def test_figure_download_failure_does_not_lose_the_article(tmp_path, monkeypatch
     assert manifest["figures"][0]["file"] is None
     assert (tmp_path / "head.md").is_file()
     assert manifest["sections"]
+
+
+ROWSPAN_TABLE = """\
+<table xmlns:ce="http://www.elsevier.com/xml/common/dtd" id="tbl0002">
+  <label>Table 2</label>
+  <tgroup cols="6">
+    <colspec colname="col1" colnum="1"/><colspec colname="col2" colnum="2"/>
+    <colspec colname="col3" colnum="3"/><colspec colname="col4" colnum="4"/>
+    <colspec colname="col5" colnum="5"/><colspec colname="col6" colnum="6"/>
+    <thead>
+      <row><entry namest="col1" nameend="col2">Checkpoint</entry>
+           <entry>18</entry><entry>50</entry><entry>51</entry><entry>11</entry></row>
+    </thead>
+    <tbody>
+      <row><entry morerows="1">Return</entry><entry>Mean</entry>
+           <entry>-14.316</entry><entry>-14.434</entry><entry>-14.437</entry><entry>-14.442</entry></row>
+      <row><entry>Minimum</entry>
+           <entry>-30.720</entry><entry>-31.175</entry><entry>-31.308</entry><entry>-29.863</entry></row>
+    </tbody>
+  </tgroup>
+</table>
+"""
+
+PADDED_TABLE = """\
+<table xmlns:ce="http://www.elsevier.com/xml/common/dtd" id="tbl0001">
+  <label>Table 1</label>
+  <tgroup cols="6">
+    <colspec colname="col1" colnum="1"/><colspec colname="col2" colnum="2"/>
+    <colspec colname="col3" colnum="3"/><colspec colname="col4" colnum="4"/>
+    <colspec colname="col5" colnum="5"/><colspec colname="col6" colnum="6"/>
+    <tbody>
+      <row><entry>Variable</entry><entry>Cal R2</entry>
+           <entry namest="col3" nameend="col4">Cal RMSE</entry>
+           <entry>Val R2</entry><entry>Val RMSE</entry></row>
+      <row><entry>Permeate flow</entry><entry>1.00</entry><entry>0.00</entry>
+           <entry namest="col4" nameend="col5">0.98</entry><entry>0.01</entry></row>
+    </tbody>
+  </tgroup>
+</table>
+"""
+
+
+def _table_rows(xml: str) -> list[list[str]]:
+    import xml.etree.ElementTree as ET
+
+    from scopus_for_dobby.core.fulltext_bundle import _table_md
+
+    md = _table_md(ET.fromstring(xml))  # noqa: S314
+    rows = [ln for ln in md.splitlines() if ln.startswith("|")]
+    return [[c.strip() for c in ln.strip("|").split("|")] for ln in rows]
+
+
+class TestTableSpans:
+    """Values must land under the header they belong to."""
+
+    def test_rowspan_repeats_so_every_row_is_self_describing(self):
+        rows = _table_rows(ROWSPAN_TABLE)
+        header, sep, first, second = rows
+        assert len(sep) == 6
+        # The stub header spans two columns; both are filled, not padded.
+        assert header[:2] == ["Checkpoint", "Checkpoint"]
+        assert header[2:] == ["18", "50", "51", "11"]
+        # -14.316 belongs to checkpoint 18, not to "Mean".
+        assert first == ["Return", "Mean", "-14.316", "-14.434", "-14.437", "-14.442"]
+        # The rowspan carries "Return" down; without it this row shifts left.
+        assert second == ["Return", "Minimum", "-30.720", "-31.175", "-31.308", "-29.863"]
+
+    def test_cosmetic_spans_are_not_expanded(self):
+        """Padding spans must not invent a column or duplicate a value.
+
+        Publishers stretch cells to fill a wider physical grid, and header and
+        body pad differently. Every row holding the same number of entries is
+        what proves the spans carry no alignment.
+        """
+        rows = _table_rows(PADDED_TABLE)
+        assert all(len(r) == 5 for r in rows), rows
+        assert rows[0] == ["Variable", "Cal R2", "Cal RMSE", "Val R2", "Val RMSE"]
+        assert rows[2] == ["Permeate flow", "1.00", "0.00", "0.98", "0.01"]
+
+    def test_every_row_has_the_same_width(self):
+        for xml in (ROWSPAN_TABLE, PADDED_TABLE):
+            widths = {len(r) for r in _table_rows(xml)}
+            assert len(widths) == 1, widths
+
+
+class TestCrossRefTargets:
+    """A cross-reference without its id is a dead end."""
+
+    def test_single_target_becomes_a_link(self):
+        import xml.etree.ElementTree as ET
+
+        from scopus_for_dobby.core.fulltext_bundle import inline
+
+        para = ET.fromstring(  # noqa: S314
+            '<para xmlns:ce="x">As shown in <cross-ref refid="fig0001">Fig. 1</cross-ref>.</para>'
+        )
+        assert "[Fig. 1](#fig0001)" in inline(para)
+
+    def test_multi_target_keeps_every_id(self):
+        """`ce:cross-refs` carries several ids; markdown allows one target."""
+        import xml.etree.ElementTree as ET
+
+        from scopus_for_dobby.core.fulltext_bundle import inline
+
+        para = ET.fromstring(  # noqa: S314
+            '<para xmlns:ce="x">Prior work <cross-refs refid="bb0010 bb0015">5,6</cross-refs>.</para>'
+        )
+        out = inline(para)
+        assert "[5,6](#bb0010" in out
+        assert "bb0015" in out, "the second target must survive somewhere"
+
+    def test_numeric_citation_is_not_left_bare(self):
+        """A bare "65" cannot be traced back; the refid is the only link."""
+        import xml.etree.ElementTree as ET
+
+        from scopus_for_dobby.core.fulltext_bundle import inline
+
+        para = ET.fromstring(  # noqa: S314
+            '<para xmlns:ce="x">Reported earlier<cross-ref refid="bb0325">65</cross-ref>.</para>'
+        )
+        assert "(#bb0325)" in inline(para)
