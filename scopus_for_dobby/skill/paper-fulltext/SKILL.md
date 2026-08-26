@@ -61,19 +61,22 @@ Cache-first, including for a paper that is **not** in the local library — a re
 `fulltext <doi>` is a cache hit, not another API call. `--force` refetches.
 
 ```bash
-fulltext 10.1016/j.watres.2026.125855      # DOI
-fulltext 2-s2.0-105035063878               # Scopus EID
-fulltext --indices 1,3                     # from the last search/list
-fulltext --collection thesis-refs          # a saved collection
-fulltext --tag review --limit 20
-fulltext --query "closed-circuit reverse osmosis"
-fulltext 2-s2.0-aaa 2-s2.0-bbb             # several at once; duplicates collapse
+scopus-for-dobby fulltext 10.1016/j.watres.2026.125855   # DOI
+scopus-for-dobby fulltext 2-s2.0-105035063878            # Scopus EID
+scopus-for-dobby fulltext --indices 1,3                  # from the last search/list
+scopus-for-dobby fulltext --collection thesis-refs       # a saved collection
+scopus-for-dobby fulltext --tag review --limit 20
+scopus-for-dobby fulltext --query "closed-circuit reverse osmosis"
+scopus-for-dobby fulltext 2-s2.0-aaa 2-s2.0-bbb          # several; duplicates collapse
 
 # pipeline from db list:
 scopus-for-dobby --json db list -c thesis-refs -n 1000 \
   | jq -r '.articles[].eid' \
   | scopus-for-dobby fulltext --eids-from-stdin
 ```
+
+`fulltext` is a subcommand, not a binary — inside the interactive REPL you drop the
+`scopus-for-dobby` prefix, but every example here is written to run in a shell as-is.
 
 Identifiers: DOI, Scopus EID (`2-s2.0-...`), or Scopus ID. Pipelines (`--collection` /
 `--tag` / `--query`) resolve saved rows, and mix freely with explicit identifiers in one

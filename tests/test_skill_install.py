@@ -374,3 +374,44 @@ class TestMultipleSkills:
         assert "do not use" in d
         for verb in ("list", "export", "filter", "sort"):
             assert verb in d, f"description should disclaim {verb!r}"
+
+
+class TestSkillExamplesAreRunnable:
+    """A `bash`-fenced example has to work when pasted into a shell.
+
+    `scopus-for-dobby`'s own SKILL.md is exempt: it documents the REPL and
+    says its workflow block deliberately drops the prefix. The task skills
+    establish no such convention, so a bare `fulltext ...` there is just a
+    command that does not exist — and it shipped that way once already,
+    with seven of eight examples unrunnable.
+    """
+
+    TASK_SKILLS = ("paper-fulltext", "citation-analysis", "corpus-profiling")
+    EXECUTABLES = ("scopus-for-dobby", "uv ", "jq ", "python", "cat ", "ls ", "mkdir ")
+
+    def _bash_lines(self, name: str) -> list[str]:
+        text = (skill_mod.SKILLS[name].src / "SKILL.md").read_text()
+        lines, inside = [], False
+        for line in text.splitlines():
+            if line.startswith("```bash"):
+                inside = True
+            elif line.startswith("```"):
+                inside = False
+            elif inside:
+                lines.append(line)
+        return lines
+
+    def test_every_example_names_an_executable(self):
+        bad = []
+        for name in self.TASK_SKILLS:
+            continued = False
+            for line in self._bash_lines(name):
+                stripped = line.strip()
+                was_continued, continued = continued, stripped.endswith("\\")
+                # Blank lines, comments, and the tail of a `\`-continued or
+                # piped command are not command starts.
+                if was_continued or not stripped or stripped[0] in "#|":
+                    continue
+                if not stripped.startswith(self.EXECUTABLES):
+                    bad.append(f"{name}: {stripped}")
+        assert not bad, "examples that do not start with an executable:\n" + "\n".join(bad)
