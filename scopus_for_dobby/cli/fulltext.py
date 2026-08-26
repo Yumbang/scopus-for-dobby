@@ -8,6 +8,7 @@ either a DuckDB pipeline (collection / tag / query) or explicit identifiers
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import click
 
@@ -19,6 +20,10 @@ from ._output import handle_error, output
 from ._state import state
 
 _ALL = 100_000
+
+# Above this many successes, list the parent directory instead of every path —
+# a 200-paper collection does not want 200 lines.
+_SHOW_PATHS = 10
 
 
 def _articles_from_pipeline(collection, tag, query, limit) -> list[dict]:
@@ -220,6 +225,18 @@ def fulltext_cmd(
             f"     {counts[ft.STATUS_SKIPPED_QUOTA]} skipped — "
             "Article Retrieval weekly quota exhausted"
         )
+    # Where the bundle landed is not decoration: bundles are stored under
+    # <eid>/, and a fetch by DOI only learns the EID from the payload. Without
+    # this the caller has spent quota on something they cannot open, and has to
+    # know to re-run the whole thing with --json to find out where it went.
+    done = [r for r in batch["items"] if r["status"] in (ft.STATUS_FETCHED, ft.STATUS_CACHED)]
+    if 0 < len(done) <= _SHOW_PATHS:
+        for r in done:
+            skin.hint(f"     {r['eid']}  {r['path']}")
+    elif done:
+        root = Path(done[0]["path"]).parent
+        skin.hint(f"     {len(done)} bundles under {root}")
+
     for r in batch["items"]:
         if r["status"] in (ft.STATUS_FETCHED, ft.STATUS_CACHED):
             continue

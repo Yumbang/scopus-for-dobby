@@ -86,9 +86,20 @@ directory. It never dumps XML or section text.
 
 ## Read the bundle
 
-Open `manifest.json` first, then only the files you need. **Never parse
+**Run `fulltext` on the paper before reading it, even when you believe it is already
+cached.** A cache hit spends no Article Retrieval request, it prints the bundle path,
+and it rebuilds anything a newer renderer would write differently. Reading a directory
+you found by hand is how you end up parsing a shape that no longer exists.
+
+Then open `manifest.json`, and only the files you need. **Never parse
 `xml/article.xml`** — it is the regenerate-from original, and the markdown already
 carries everything.
+
+Not every directory under `fulltext/` is a finished bundle. One written by an older
+version may have **no `manifest.json` at all** (just `xml/article.xml`), or a manifest
+missing keys this document describes — `references` is absent, not `null`, in anything
+written before it existed. Treat a missing key as "older bundle, regenerate", never as
+"this paper has no bibliography". Running `fulltext` fixes both cases.
 
 ```
 ~/.scopus-for-dobby/fulltext/<eid>/

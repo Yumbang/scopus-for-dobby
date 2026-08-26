@@ -37,6 +37,12 @@ Do not parallelize `fulltext`, and do not hang it off `search-all` or `openalex 
 `source`, `sections` (nested `{id, title, file, children}`), `figures`
 (`{id, label, locator, file, caption}`), `tables`, and `references` (path or `null`).
 
+`parser` is the renderer version, and it is the key to read defensively: those are the
+keys the **current** renderer emits. A bundle left by an older one carries a lower
+`parser` and simply lacks the newer keys — `manifest["references"]` raises `KeyError`
+rather than returning `None`. Use `.get()`, and re-run `fulltext` (a cache hit) to bring
+the bundle up to date rather than coding around the old shape.
+
 DuckDB only ever gets `fulltext_fetched_at`. The body is never written into
 `articles.abstract`, and `--json` never dumps section text.
 
@@ -46,7 +52,17 @@ user-facing output to ≤ 200 characters plus a DOI link.
 ## Regeneration and migration
 
 The markdown is rebuilt when the renderer version changes, so an older bundle picks up new
-output on its next `fulltext` call. Cached figures are reused, never re-downloaded.
+output on its next `fulltext` call. Cached figures are reused, never re-downloaded — but a
+figure that is *missing* is fetched during that rebuild, so regenerating an old bundle can
+cost `/content/object` requests even though it costs no Article Retrieval request.
+
+Three shapes therefore coexist on disk, and only the newest matches this document:
+
+| What you find | What it is | What to do |
+|---|---|---|
+| `manifest.json` at the current `parser` | a finished bundle | read it |
+| `manifest.json` at a lower `parser` | written by an older renderer; newer keys absent | re-run `fulltext`, then read |
+| `xml/article.xml` and nothing else | fetched before the markdown renderer existed | re-run `fulltext`, then read |
 
 A leftover `fulltext/<eid>.xml`, or a `source.xml` inside a paper folder, is moved into
 `fulltext/<eid>/xml/article.xml` automatically.
