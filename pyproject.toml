@@ -73,6 +73,13 @@ scopus-for-dobby = "scopus_for_dobby.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 
+# setuptools-scm's file finder otherwise sweeps every git-tracked file into the
+# wheel, which is how `evals/` shipped despite the narrow package-data glob below.
+# Everything the package needs at runtime is listed there explicitly, so opting
+# out is what keeps development material out of a user's install.
+[tool.setuptools]
+include-package-data = false
+
 # The agent skill ships inside the package so `skill install` works from any
 # install, with no repo checkout. Without this it is absent from the wheel and
 # the command fails only for people who installed normally.

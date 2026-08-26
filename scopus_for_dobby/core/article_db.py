@@ -12,6 +12,7 @@ Each article is keyed by EID for deduplication. Supports:
 import contextlib
 import json
 import logging
+import re
 import threading
 import unicodedata
 from contextlib import contextmanager
@@ -435,20 +436,34 @@ def _strip_accents(s: str) -> str:
     return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
 
 
+# "j." / "k.h." / "k.h" — an initials token, never a spelled-out name part.
+_INITIALS = re.compile(r"^[a-z](?:\.[a-z])*\.?$")
+
+
 def _name_keys(s: str) -> set[str]:
     """Comparable keys for a personal name.
 
-    Elsevier full-text XML often indexes ``Cho K.`` while Scopus stored
-    ``Cho K.H.``. Exact string match misses; surname + first initial hits.
+    Two incompatible spellings reach this function for the same person:
+    Scopus indexes surname-first with initials (``Cho K.H.``), while Elsevier
+    full text spells the given name out first (``Kyung Hwa Cho``). Both are
+    reduced to ``surname + given initial`` so they compare equal — matching on
+    the raw string, or assuming a fixed token order, misses every time.
     """
     raw = _strip_accents(s or "").lower().replace(",", " ")
     raw = " ".join(raw.split())
     if not raw:
         return set()
     keys = {raw}
-    parts = [p for p in raw.replace(".", " ").split() if p]
-    if len(parts) >= 2:
-        keys.add(f"{parts[0]} {parts[1][0]}")
+    tokens = [t for t in raw.split() if t]
+    if len(tokens) < 2:
+        return keys
+    if any(_INITIALS.match(t) for t in tokens[1:]):
+        surname, given = tokens[0], tokens[1]  # "Cho K.H."
+    else:
+        surname, given = tokens[-1], tokens[0]  # "Kyung Hwa Cho"
+    surname = surname.replace(".", "")
+    if surname and given:
+        keys.add(f"{surname} {given[0]}")
     return keys
 
 
@@ -1220,8 +1235,12 @@ def record_fulltext_fetch(eid: str, roles: dict | None = None) -> dict:
         for auid, name, was_first, was_corr in links:
             is_first = was_first
             is_corr = was_corr
-            if have_first:
-                is_first = auid in first_auids or _names_hit(name or "", first_names)
+            # Both flags are only ever raised, never cleared. ``is_first`` is
+            # written at import time as ``seq == 1``; full text adds the *co*-first
+            # authors named in a footnote. Reassigning it would erase the
+            # first-listed author whenever the footnote parse matched nobody.
+            if have_first and (auid in first_auids or _names_hit(name or "", first_names)):
+                is_first = True
             if have_corr and (auid in corr_auids or _names_hit(name or "", corr_names)):
                 is_corr = True
             if is_first == was_first and is_corr == was_corr:

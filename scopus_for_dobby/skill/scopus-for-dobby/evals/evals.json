@@ -9,14 +9,20 @@
     },
     {
       "id": 2,
-      "prompt": "I have a collection called thesis-refs. How do I export it to BibTeX and also send it to Zotero?",
-      "expected_output": "Should show export --format bibtex --collection thesis-refs and plugin send zotero --collection thesis-refs",
+      "prompt": "I have a collection called thesis-refs. How do I export it to BibTeX, and can I get RIS instead?",
+      "expected_output": "Should show export --format bibtex --collection thesis-refs, and note that --format takes xlsx|bibtex|ris so RIS is the same command with a different format. Must NOT invent a command the CLI does not have.",
       "files": []
     },
     {
       "id": 3,
       "prompt": "What's the difference between free and institutional tier? I'm only seeing first authors, no abstracts when I retrieve papers.",
       "expected_output": "Should explain the two tiers, that META view (free) lacks abstracts/full author lists, and how to upgrade with auth setup --inst-token",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "I saved Zhang 2023 (10.1016/j.watres.2023.119876) yesterday. Does it actually report the flux-decline rate, or just cite someone else for it?",
+      "expected_output": "Should recognise this needs the article BODY, not the abstract, and defer to the paper-fulltext skill / `fulltext 10.1016/j.watres.2023.119876`, then read manifest.json and the section markdown. Must NOT answer from the abstract alone and must NOT scrape ScienceDirect.",
       "files": []
     }
   ]

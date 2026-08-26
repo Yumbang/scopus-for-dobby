@@ -66,10 +66,9 @@ def resolve_items(
         seen.add(key)
         items.append(item)
 
-    if collection or tag or query:
-        for article in _articles_from_pipeline(collection, tag, query, limit):
-            _add(ft.item_from_article(article))
-
+    # Explicitly named identifiers come first: when --limit truncates, the
+    # papers the user asked for by name must not be the ones dropped in
+    # favour of whatever a collection happened to list.
     idents: list[str] = list(identifiers)
     if indices:
         idents.extend(_eids_from_indices(indices))
@@ -82,6 +81,10 @@ def resolve_items(
         article = db_mod.lookup_article(ident)
         _add(ft.item_from_identifier(ident, article))
 
+    if collection or tag or query:
+        for article in _articles_from_pipeline(collection, tag, query, limit):
+            _add(ft.item_from_article(article))
+
     if limit is not None:
         items = items[:limit]
     return items
@@ -92,6 +95,11 @@ def _stamp_if_in_db(row: dict) -> None:
         return
     eid = row.get("eid") or ""
     if not eid:
+        return
+    # ``resolve_items`` already looked this identifier up and found nothing, so
+    # only an EID first learned from the payload is worth a second query — over
+    # the daemon each of these is an HTTP round-trip.
+    if not row.get("in_db") and not row.get("eid_discovered"):
         return
     db_mod.record_fulltext_fetch(eid, roles=row.get("roles"))
 

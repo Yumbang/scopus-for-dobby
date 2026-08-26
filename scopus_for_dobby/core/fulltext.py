@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import unicodedata
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -143,6 +144,93 @@ def write_cache(eid: str, xml: str, *, doi: str = "") -> Path:
     dest = write_source(eid, xml)
     materialize(xml, dest, eid=eid, doi=doi)
     return dest
+
+
+INDEX_NAME = "index.json"
+
+
+def _index_path() -> Path:
+    return _cache_root() / INDEX_NAME
+
+
+def _load_index() -> dict:
+    path = _index_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def index_doi(doi: str | None, eid: str) -> None:
+    """Remember which bundle holds a DOI, so a later DOI-only fetch is a cache hit.
+
+    A paper fetched by DOI lands under the EID its XML carries, which a DOI
+    alone cannot reconstruct. Without this map every ``fulltext <doi>`` for a
+    paper outside the library would re-spend quota on an article already on disk.
+    """
+    key = normalize_doi(doi)
+    if not key or not eid:
+        return
+    index = _load_index()
+    if index.get(key) == eid:
+        return
+    index[key] = eid
+    path = _index_path()
+    path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _scan_manifests_for_doi(doi: str) -> str:
+    """Recover a DOI→EID mapping from bundles written before the index existed."""
+    root = _cache_root()
+    if not root.is_dir():
+        return ""
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        manifest = d / "manifest.json"
+        if not manifest.is_file():
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if normalize_doi(data.get("doi")) == doi:
+            return data.get("eid") or d.name
+    return ""
+
+
+def cached_eid_for(item: dict) -> str:
+    """EID of the bundle already holding this item's XML, or ``""``."""
+    eid = (item.get("eid") or "").strip()
+    if eid and has_cache(eid):
+        return eid
+    doi = normalize_doi(item.get("doi"))
+    if not doi:
+        return ""
+    candidate = _load_index().get(doi) or ""
+    if candidate and has_cache(candidate):
+        return candidate
+    candidate = _scan_manifests_for_doi(doi)
+    if candidate and has_cache(candidate):
+        index_doi(doi, candidate)
+        return candidate
+    return ""
+
+
+def discard_cache(eid: str) -> None:
+    """Delete a bundle whose XML cannot be parsed, so the next fetch can heal it."""
+    dest = bundle_dir(eid)
+    root = _cache_root().resolve()
+    try:
+        if dest.resolve().parent != root or not dest.is_dir():
+            return
+    except OSError:
+        return
+    shutil.rmtree(dest, ignore_errors=True)
 
 
 def json_manifest(dest: Path) -> dict | None:
@@ -449,6 +537,7 @@ def fetch_one(item: dict, *, force: bool = False, request=None) -> dict:
         "path": str(bundle_dir(eid)) if eid else "",
         "status": STATUS_ERROR,
         "reason": "",
+        "eid_discovered": False,
         "roles": {
             "first_auids": [],
             "first_names": [],
@@ -459,15 +548,26 @@ def fetch_one(item: dict, *, force: bool = False, request=None) -> dict:
         "manifest": None,
     }
 
-    if eid and has_cache(eid) and not force:
-        xml = read_cache(eid) or ""
-        result["status"] = STATUS_CACHED
-        result["path"] = str(bundle_dir(eid))
-        result["roles"] = parse_roles(xml)
-        manifest = ensure_bundle(eid, xml, doi=result["doi"])
-        result["manifest"] = manifest
-        result["outline"] = [s["title"] for s in manifest.get("sections") or []]
-        return result
+    cached = "" if force else cached_eid_for(item)
+    if cached:
+        xml = read_cache(cached) or ""
+        try:
+            manifest = ensure_bundle(cached, xml, doi=result["doi"])
+        except ET.ParseError:
+            # The cached XML is unusable — most likely a truncated response
+            # written before it was validated. Drop it and fetch again rather
+            # than raising on every future call for this paper.
+            discard_cache(cached)
+        else:
+            result["eid"] = cached
+            result["eid_discovered"] = cached != eid
+            result["status"] = STATUS_CACHED
+            result["path"] = str(bundle_dir(cached))
+            result["roles"] = parse_roles(xml)
+            result["manifest"] = manifest
+            result["outline"] = [s["title"] for s in manifest.get("sections") or []]
+            index_doi(result["doi"], cached)
+            return result
 
     endpoint = article_endpoint(item)
     if not endpoint:
@@ -494,12 +594,23 @@ def fetch_one(item: dict, *, force: bool = False, request=None) -> dict:
             result["reason"] = f"HTTP {status}"
         return result
 
+    try:
+        _parse_xml(body)
+    except ET.ParseError as exc:
+        # Never cache a payload the bundle writer cannot parse: it would poison
+        # the directory and raise on every later call, --force included.
+        result["status"] = STATUS_ERROR
+        result["reason"] = f"malformed XML from Elsevier ({exc}); nothing cached"
+        return result
+
     resolved_eid = eid or extract_eid_from_xml(body) or ""
     if not resolved_eid:
         # Still cache under a DOI-derived key so a later DB add can move it.
         resolved_eid = (doi or "unknown").replace("/", "_")
     path = write_cache(resolved_eid, body, doi=result["doi"])
+    index_doi(result["doi"], resolved_eid)
     result["eid"] = resolved_eid
+    result["eid_discovered"] = resolved_eid != eid
     result["path"] = str(path)
     result["roles"] = parse_roles(body)
     manifest = json_manifest(path)
@@ -523,21 +634,17 @@ def fetch_batch(
     if request is None:
         request = request_elsevier
     results: list[dict] = []
-    stopped_quota = False
     for i, item in enumerate(items):
-        if stopped_quota:
-            results.append(_skip_quota(item))
-            continue
         try:
             results.append(fetch_one(item, force=force, request=request))
         except QuotaExceeded as exc:
-            stopped_quota = True
             row = _skip_quota(item)
             row["reason"] = str(exc)
             results.append(row)
-            for rest in items[i + 1 :]:
-                results.append(_skip_quota(rest))
+            results.extend(_skip_quota(rest) for rest in items[i + 1 :])
             break
+        except Exception as exc:  # noqa: BLE001 — one bad paper must not end the run
+            results.append(_error_row(item, f"{type(exc).__name__}: {exc}"))
 
     counts: dict[str, int] = {}
     for row in results:
@@ -545,7 +652,8 @@ def fetch_batch(
     return {"items": results, "counts": counts, "total": len(results)}
 
 
-def _skip_quota(item: dict) -> dict:
+def _miss_row(item: dict, status: str, reason: str) -> dict:
+    """A per-item outcome with no XML behind it. Same shape as ``fetch_one``."""
     eid = (item.get("eid") or "").strip()
     return {
         "eid": eid,
@@ -553,8 +661,9 @@ def _skip_quota(item: dict) -> dict:
         "in_db": bool(item.get("in_db")),
         "oa_url": item.get("oa_url") or "",
         "path": str(bundle_dir(eid)) if eid else "",
-        "status": STATUS_SKIPPED_QUOTA,
-        "reason": "weekly Article Retrieval quota exhausted; remaining items skipped",
+        "status": status,
+        "reason": reason,
+        "eid_discovered": False,
         "roles": {
             "first_auids": [],
             "first_names": [],
@@ -562,7 +671,20 @@ def _skip_quota(item: dict) -> dict:
             "corr_names": [],
         },
         "outline": [],
+        "manifest": None,
     }
+
+
+def _skip_quota(item: dict) -> dict:
+    return _miss_row(
+        item,
+        STATUS_SKIPPED_QUOTA,
+        "weekly Article Retrieval quota exhausted; remaining items skipped",
+    )
+
+
+def _error_row(item: dict, reason: str) -> dict:
+    return _miss_row(item, STATUS_ERROR, reason)
 
 
 def item_from_article(article: dict) -> dict:

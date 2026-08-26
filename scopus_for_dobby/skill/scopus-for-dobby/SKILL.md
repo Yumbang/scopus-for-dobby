@@ -1,6 +1,6 @@
 ---
 name: scopus-for-dobby
-description: "Reference guide for using the scopus-for-dobby CLI — a stateful tool for searching Scopus, collecting papers into a local DuckDB database, managing collections/tags/authors, enriching with OpenAlex (open-access links, citation graphs), fetching Elsevier full text into a local markdown bundle, and exporting to XLSX/BibTeX/RIS. Use this skill whenever the user asks how to use scopus-for-dobby, wants to search Scopus, manage their paper database, export references, work with authors, find open-access PDFs, fetch a paper's full text, or needs the paper body (methods, a quote, a figure, an equation, 'what did they actually do/claim') — not just the abstract. Also trigger on Scopus queries, OpenAlex, field codes, paper collections, citation management, or the dobby REPL. Not for reading a citation graph (citation-analysis) or statistically profiling a large corpus (corpus-profiling)."
+description: "Reference guide for using the scopus-for-dobby CLI — a stateful tool for searching Scopus, collecting papers into a local DuckDB database, managing collections/tags/authors, enriching with OpenAlex (open-access links, citation graphs), and exporting to XLSX/BibTeX/RIS. Use this skill whenever the user asks how to use scopus-for-dobby, wants to search Scopus, manage their paper database, export references, work with authors, or find open-access PDFs. Also trigger on Scopus queries, OpenAlex, field codes, paper collections, citation management, or the dobby REPL. Not for reading the body of a paper — methods, a quote, a figure, an equation, 'what did they actually do/claim' — that is the paper-fulltext skill. Not for reading a citation graph (citation-analysis) or statistically profiling a large corpus (corpus-profiling)."
 ---
 
 # scopus-for-dobby — CLI Reference
@@ -16,11 +16,15 @@ Architecture in one line: each command opens the local DuckDB database in-proces
 | `references/search.md` | Building Scopus queries (field codes, filters), fetching abstracts, tier differences, Scopus API quota |
 | `references/library.md` | Managing the local DB: tags, collections, working collection, authors, export, `--json` scripting |
 | `references/openalex.md` | Open-access links, OpenAlex enrichment, citation-graph export (Gephi/networkx) |
-| `references/fulltext.md` | Elsevier article body: `fulltext` command, local markdown bundle, entitlement misses, Article Retrieval quota |
 | `references/research-strategy.md` | Any broad/multi-topic literature research — decide direct vs. subagent-delegated **before** searching |
 | `references/troubleshooting.md` | CLI hangs, daemon errors, slow first run, 429s, resetting the DB |
 
 For a quick one-off command, the map below is usually enough; for multi-step work, read the relevant reference first — the flags and stateful behaviors there change how you should sequence commands.
+
+Three sibling **skills** cover the questions this one does not: **paper-fulltext** (reading a
+paper's body — methods, a quote, a figure, an equation), **citation-analysis** (what a search
+missed, seminal works, research fronts), and **corpus-profiling** (what a large set is about).
+Load those rather than answering from here.
 
 ## Quick Start
 
@@ -53,13 +57,13 @@ scopus-for-dobby search "deep learning" --limit 20   # or direct subcommands
 | `search <query> [-n] [-s] [-y] [--subject] [-t] [-c] [--no-save]` | Scopus search, auto-saved to DB (max 25/page) |
 | `search-all <query> --max N` | Paginated search (multiple API calls) |
 | `abstract <DOI\|EID\|ScopusID> [--view FULL]` | Single-paper **metadata**, auto-saved; `FULL` adds abstract text, full author list, keywords, subject areas — not the article body (see `references/search.md`) |
-| `fulltext <DOI\|EID> [-c COLL] [--tag] [--query] [--eids-from-stdin]` | Elsevier full text → `fulltext/<eid>/` bundle. Use when the **body** is needed, not only when the user says "full text" — ask first unless autonomous (see `references/fulltext.md`) |
+| `fulltext <DOI\|EID> [-c COLL] [--tag] [--query] [--eids-from-stdin]` | Elsevier full text → `fulltext/<eid>/` bundle. Metered, and it can miss on entitlement — load the **paper-fulltext** skill before using it |
 | `db add / list / info / tag / untag / note / remove / stats` | Local article database (`note`/`info` take an EID only — no `--indices`) |
 | `collection list / create / add / remove / delete / merge / rename` | Group articles (tags stay independent) |
 | `collection set / unset / current` | **Working collection** — becomes the default for `db add` and `export` |
 | `author list / info / coauthors / fetch / note` | Author DB (auto-extracted); `fetch` pulls h-index/ORCID from Scopus |
 | `export --format xlsx\|bibtex\|ris [-o] [-t] [-c] [--from-last-search]` | Bibliography export |
-| `openalex enrich / graph / email` | Free keyless enrichment: OA PDF links, citation counts, topics; citation-graph files |
+| `openalex enrich / graph / analyze / key / email` | OA PDF links, citation counts, topics; citation-graph files; `analyze` interprets a graph (**citation-analysis** skill). Free, but metered per IP — set `openalex key` first |
 | `serve [--port] [--idle-timeout]` | Start the HTTP daemon (needs the `[gui]` extra). Only needed for the macOS GUI, or to run two clients at once — see `references/troubleshooting.md` |
 
 Global flag: `--json` before the command gives machine-readable output (`scopus-for-dobby --json db stats`).
@@ -91,9 +95,8 @@ search-all "TITLE-ABS-KEY(deep learning AND medical imaging)" --max 100 \
 openalex enrich --collection my-review        # free OA links + citation counts by DOI
 openalex graph --collection my-review -o review_map.graphml   # citation graph → Gephi
 export --format xlsx -o review_papers.xlsx    # exports my-review (working collection)
-# Body is optional. Screening uses abstracts. If a claim/method/figure
-# needs the article itself: ask to `fulltext` those EIDs (see fulltext.md).
-# Cache hits and a paper the user already named for close reading: just fetch.
+# Body is optional — screening uses abstracts. If a claim, method, or figure
+# needs the article itself, that is the paper-fulltext skill; load it first.
 
 # Track an author
 search "AU-ID(55666793600)" --sort -pubyear

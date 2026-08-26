@@ -90,7 +90,7 @@ done
 
 Each iteration is one API call against the abstract quota — for large collections, check the budget first with `auth quota`.
 
-`abstract --view FULL` is still not the paper body. For methods, quotes, figures, equations, or a specific claim, use `fulltext` (see `fulltext.md`: ask the user unless the fetch is autonomous). Do not scrape ScienceDirect.
+`abstract --view FULL` is still not the paper body. For methods, quotes, figures, equations, or a specific claim, that is the **paper-fulltext** skill — load it first; it decides when to ask the user. Do not scrape ScienceDirect.
 
 ## API Rate Limits & Quota
 

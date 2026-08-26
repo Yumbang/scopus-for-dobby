@@ -321,6 +321,42 @@ class TestMultipleSkills:
         assert "citation-analysis skill" in d["scopus-for-dobby"] or True  # base skill
         assert "scopus-for-dobby skill" in d["citation-analysis"]
         assert "citation-analysis" in d["corpus-profiling"]
+        assert "paper-fulltext" in d["scopus-for-dobby"]
+        assert "paper-fulltext" in d["citation-analysis"]
+        assert "paper-fulltext" in d["corpus-profiling"]
+
+    def test_fulltext_skill_claims_the_body_question(self):
+        """The trigger is a research need, not the phrase "full text".
+
+        An agent asked what a paper actually did has to reach this skill without
+        first deciding to consult a CLI manual — that is why it is its own entry
+        and not a reference file under scopus-for-dobby.
+        """
+        d = self._descriptions()["paper-fulltext"]
+        for cue in ("body", "methods", "quote", "figure", "equation"):
+            assert cue in d, f"description should claim {cue!r}"
+
+    def test_fulltext_skill_disclaims_finding_papers(self):
+        """The trap: grabbing an ordinary search or listing request.
+
+        Fetching a body spends metered quota and can miss on entitlement, so a
+        description that reads as "anything to do with papers" is expensive to
+        get wrong in a way `db list` never is.
+        """
+        d = self._descriptions()["paper-fulltext"]
+        assert "scopus-for-dobby skill" in d
+        assert "citation-analysis" in d
+        assert "corpus-profiling" in d
+        for verb in ("searching", "listing", "exporting"):
+            assert verb in d, f"description should disclaim {verb!r}"
+        # Screening many papers is abstracts' job, and saying so is what keeps
+        # this skill from firing on every literature-review request.
+        assert "abstract" in d
+
+    def test_base_skill_no_longer_claims_the_body(self):
+        """Two descriptions claiming one question is how the wrong one loads."""
+        d = self._descriptions()["scopus-for-dobby"]
+        assert "not just the abstract" not in d
 
     def test_profiling_skill_disclaims_plain_listing(self):
         """The trap: firing when the user just wants to see their papers.

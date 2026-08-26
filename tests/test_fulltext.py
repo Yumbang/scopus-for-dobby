@@ -55,6 +55,10 @@ XML_FULL = """\
 </full-text-retrieval-response>
 """
 
+# Carries the <ce:sections marker looks_like_fulltext keys on, but is cut off
+# mid-document — what a dropped connection or a truncated proxy response looks like.
+XML_TRUNCATED = XML_FULL[: XML_FULL.index("<ce:para>") + 40]
+
 SAMPLE = {
     "dc:title": "Adaptive RL for CCRO",
     "dc:creator": "Moon J.",
@@ -307,3 +311,136 @@ class TestCliBatch:
         result = runner.invoke(root_cli, ["fulltext"])
         assert result.exit_code != 0
         assert "Provide identifiers" in result.output or "Provide identifiers" in (result.stderr or "")
+
+
+class TestMalformedPayload:
+    """A payload the bundle writer cannot parse is one miss, not a dead run."""
+
+    def test_batch_continues_and_nothing_is_cached(self, tmp_db, monkeypatch):
+        batch = ft.fetch_batch(
+            [
+                {"eid": "2-s2.0-a", "doi": "10.1/aaa"},
+                {"eid": "2-s2.0-b", "doi": "10.1/bbb"},
+            ],
+            request=_fake_request(
+                {
+                    "aaa": {"status": 200, "text": XML_TRUNCATED, "remaining": None, "reset": None},
+                    "bbb": {"status": 200, "text": XML_FULL, "remaining": None, "reset": None},
+                }
+            ),
+        )
+        assert batch["total"] == 2
+        assert batch["counts"][ft.STATUS_ERROR] == 1
+        assert batch["counts"][ft.STATUS_FETCHED] == 1
+        assert "malformed XML" in batch["items"][0]["reason"]
+        # Caching it would raise on every later call for this paper, --force included.
+        assert not ft.has_cache("2-s2.0-a")
+
+    def test_corrupt_bundle_on_disk_self_heals(self, tmp_db):
+        """A bundle poisoned by an earlier version must not raise forever."""
+        ft.write_source("2-s2.0-a", XML_TRUNCATED)
+        calls = {"n": 0}
+
+        def request(endpoint, params=None, **kwargs):
+            calls["n"] += 1
+            return {"status": 200, "text": XML_FULL, "remaining": None, "reset": None}
+
+        row = ft.fetch_one({"eid": "2-s2.0-a", "doi": "10.1/aaa"}, request=request)
+        assert row["status"] == ft.STATUS_FETCHED
+        assert calls["n"] == 1
+
+    def test_one_item_raising_does_not_end_the_batch(self, tmp_db):
+        def request(endpoint, params=None, **kwargs):
+            if "aaa" in endpoint:
+                raise ConnectionError("connection reset")
+            return {"status": 200, "text": XML_FULL, "remaining": None, "reset": None}
+
+        batch = ft.fetch_batch(
+            [
+                {"eid": "2-s2.0-a", "doi": "10.1/aaa"},
+                {"eid": "2-s2.0-b", "doi": "10.1/bbb"},
+            ],
+            request=request,
+        )
+        assert batch["counts"][ft.STATUS_FETCHED] == 1
+        assert "connection reset" in batch["items"][0]["reason"]
+
+
+class TestDoiOnlyCache:
+    """A paper outside the library is still cache-first."""
+
+    def test_second_fetch_by_doi_spends_no_quota(self, tmp_db):
+        calls = {"n": 0}
+
+        def request(endpoint, params=None, **kwargs):
+            calls["n"] += 1
+            return {"status": 200, "text": XML_FULL, "remaining": None, "reset": None}
+
+        # No eid: the bundle lands under the EID the payload carries, which a
+        # DOI alone cannot reconstruct without the index.
+        item = {"eid": "", "doi": "10.1016/j.watres.2026.125855", "in_db": False}
+        first = ft.fetch_one(dict(item), request=request)
+        assert first["eid"] == "2-s2.0-105035063878"
+
+        second = ft.fetch_one(dict(item), request=request)
+        assert second["status"] == ft.STATUS_CACHED
+        assert second["eid"] == "2-s2.0-105035063878"
+        assert calls["n"] == 1
+
+    def test_index_rebuilds_from_manifests(self, tmp_db):
+        """Bundles written before the index existed are still found."""
+
+        def request(endpoint, params=None, **kwargs):
+            return {"status": 200, "text": XML_FULL, "remaining": None, "reset": None}
+
+        ft.fetch_one({"eid": "", "doi": "10.1016/j.watres.2026.125855"}, request=request)
+        ft._index_path().unlink()
+
+        row = ft.fetch_one(
+            {"eid": "", "doi": "10.1016/j.watres.2026.125855"},
+            request=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no http")),
+        )
+        assert row["status"] == ft.STATUS_CACHED
+
+
+class TestRolesNeverClearFlags:
+    """Full text raises role flags; it must never lower one already set."""
+
+    def test_unmatched_names_leave_the_first_author_alone(self, tmp_db):
+        db_mod.add_entries([SAMPLE])
+        db_mod.record_fulltext_fetch(
+            SAMPLE["eid"],
+            roles={
+                "first_auids": [],
+                "first_names": ["Someone Unrelated"],
+                "corr_auids": [],
+                "corr_names": [],
+            },
+        )
+        moon = db_mod.get_author("58041490500")
+        assert moon["articles"][0]["is_first_author"] is True
+
+    def test_given_name_first_matches_scopus_indexed_name(self, tmp_db):
+        """``_roles_from_flat_text`` yields "Jeongwoo Moon"; Scopus stores "Moon J."."""
+        db_mod.add_entries([SAMPLE])
+        db_mod.record_fulltext_fetch(
+            SAMPLE["eid"],
+            roles={
+                "first_auids": [],
+                "first_names": ["Jeongwoo Moon", "Byeongchan Yun"],
+                "corr_auids": [],
+                "corr_names": ["Kwanho Jeong"],
+            },
+        )
+        assert db_mod.get_author("59227334200")["articles"][0]["is_first_author"] is True
+        assert db_mod.get_author("56659062100")["articles"][0]["is_corresponding"] is True
+
+    def test_flat_text_fallback_shape_round_trips(self):
+        raw = (
+            "<full-text-retrieval-response><xocs:rawtext xmlns:xocs='x'>"
+            "Jeongwoo Moon a 1 Byeongchan Yun b 1 "
+            "1 These authors contributed equally to this work."
+            "</xocs:rawtext></full-text-retrieval-response>"
+        )
+        names = ft.parse_roles(raw)["first_names"]
+        assert names and all(db_mod._names_hit("Moon J.", {n}) for n in names[:1])

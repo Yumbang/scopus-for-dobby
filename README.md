@@ -40,7 +40,10 @@ scopus-for-dobby openalex key YOUR_OPENALEX_KEY
 # 3. Search (results auto-save to local DB)
 scopus-for-dobby search "deep learning" --sort citedby-count
 
-# 4. Export
+# 4. Read a paper's body (Elsevier full text → local markdown)
+scopus-for-dobby fulltext 10.1016/j.watres.2026.125855
+
+# 5. Export
 scopus-for-dobby export --format xlsx -o papers.xlsx
 
 # Interactive mode
@@ -50,9 +53,9 @@ scopus-for-dobby
 ## Use with an AI agent
 
 The CLI ships **agent skills** — the Scopus query syntax, the stateful library
-model, OpenAlex enrichment, the failure modes, and how to read a citation graph
-— so an agent drives it correctly instead of guessing at flags. Install them
-with the CLI itself:
+model, OpenAlex enrichment, how to read a citation graph, when a paper's *body*
+is worth fetching, and the failure modes — so an agent drives it correctly
+instead of guessing at flags. Install them with the CLI itself:
 
 ```bash
 # 1. The CLI (the binary dependency)
@@ -68,8 +71,13 @@ scopus-for-dobby skill install --skill citation-analysis   # just one
 | Skill | Teaches |
 |---|---|
 | `scopus-for-dobby` | Driving the CLI: query syntax, the stateful library model, collections, enrichment, export |
+| `paper-fulltext` | Reading one paper's body: when it is worth the quota, the markdown bundle, entitlement misses |
 | `citation-analysis` | Reading a citation graph: what a search found, what it missed, what to read next |
 | `corpus-profiling` | Characterising a set too large to read: topic/keyword profiles and their coverage caveats |
+
+Only the first is a tool manual. The other three answer a *research* question, so
+each gets its own entry in the agent's trigger space — a capability buried inside
+the CLI reference is only found by an agent that already decided to consult one.
 
 ```bash
 scopus-for-dobby skill list         # every skill, target, and install path
@@ -106,7 +114,8 @@ Because the skill is packaged with the code, upgrading the CLI and re-running
 | `auth` | `status` | Check API connectivity and quota |
 | `search` | | Search papers (auto-wraps in TITLE-ABS-KEY) |
 | `search-all` | | Paginated multi-page search |
-| `abstract` | | Retrieve detailed paper metadata by DOI/EID |
+| `abstract` | | Retrieve detailed paper **metadata** by DOI/EID — not the article body |
+| `fulltext` | | Fetch the Elsevier article **body** into a local markdown bundle (see below) |
 | `db` | `add` | Save papers to local database |
 | `db` | `list` | List/filter/search saved articles |
 | `db` | `remove` | Remove articles from DB |
@@ -119,7 +128,7 @@ Because the skill is packaged with the code, upgrading the CLI and re-running
 | `author` | `coauthors` / `note` | Co-author network and notes |
 | `collection` | `create` / `delete` | Manage named collections |
 | `collection` | `add` / `remove` | Add/remove articles from collections |
-| `openalex` | `key` | Set the free OpenAlex API key (~10x the anonymous daily budget) |
+| `openalex` | `key` / `email` | Set the free OpenAlex API key (~10x the anonymous daily budget) and polite-pool email |
 | `openalex` | `enrich` | Add open-access links, OA status, and OpenAlex citation counts |
 | `openalex` | `graph` | Build citation graphs (`--depth 1..3`) → GraphML / Gephi CSV / node-link JSON |
 | `openalex` | `analyze` | Interpret a graph: gaps, themes, foundations, off-topic seeds (see below) |
@@ -127,6 +136,47 @@ Because the skill is packaged with the code, upgrading the CLI and re-running
 | `export` | | Export to XLSX, BibTeX, or RIS |
 | `skill` | `install` / `uninstall` / `status` / `list` / `path` | Manage the bundled agent skills (see [Use with an AI agent](#use-with-an-ai-agent)) |
 | `serve` | | Run the local HTTP daemon (for the macOS GUI / multi-process access) |
+
+### `fulltext` — the article body, not the abstract
+
+`abstract --view FULL` gives you Scopus metadata. `fulltext` calls Elsevier
+**Article Retrieval** and writes the paper itself to disk as markdown.
+
+```bash
+scopus-for-dobby fulltext 10.1016/j.watres.2026.125855   # DOI
+scopus-for-dobby fulltext 2-s2.0-105035063878            # Scopus EID
+scopus-for-dobby fulltext --collection thesis-refs       # a saved collection
+scopus-for-dobby fulltext --indices 1,3                  # from the last search
+scopus-for-dobby --json db list -c thesis-refs -n 1000 \
+  | jq -r '.articles[].eid' | scopus-for-dobby fulltext --eids-from-stdin
+```
+
+Each paper becomes a directory under `~/.scopus-for-dobby/fulltext/<eid>/`:
+
+```
+manifest.json      # outline + relative paths — open this first
+head.md            # title, authors, affiliations, abstract, keywords
+sections/*.md      # one file per section, nested included; math as LaTeX
+references.md      # bibliography, when the XML carries one
+figures/<id>.jpg + <id>.caption.md
+tables/<id>.md
+xml/article.xml    # the original Elsevier XML
+```
+
+No separate credential and no extra: it uses the same Elsevier key as `search`,
+and needs nothing beyond the core dependencies. The database only ever gets a
+`fulltext_fetched_at` stamp — the body is never written into `articles.abstract`.
+
+Fetches are **cache-first**, including for papers you never saved, and
+**sequential** (Article Retrieval allows 10 req/s; concurrency only trips 429s
+sooner). Failures are **per item** — a closed paper, a non-Elsevier paper, or a
+malformed response is one `not_entitled` / `not_found` / `error` row, and the
+rest of the batch still runs. On an entitlement miss any `oa_url` that
+`openalex enrich` stored is echoed so you can try the open-access copy.
+
+Article Retrieval draws on its own weekly budget — separate from Scopus Search
+and Abstract Retrieval — so `auth quota` reports it under
+`by_api.sciencedirect-article`.
 
 ### `openalex analyze` — what your search found, and missed
 
@@ -195,10 +245,17 @@ Endpoints (auto-docs at `/docs`): `/articles`, `/collections`, `/search/fts`,
 | Free | STANDARD | Title, first author, journal, DOI, citations, affiliations |
 | Institutional | COMPLETE | Above + abstract, full author list, keywords |
 
+`fulltext` is gated separately again: the key gets you the endpoint, but your
+institution's ScienceDirect subscription decides whether a given paper returns a
+body or a `not_entitled`. `auth upgrade --inst-token YOUR_TOKEN` — usually on the
+institution network or VPN — is what converts most misses into fetches.
+
 ## Data Storage
 
 All data is stored in `~/.scopus-for-dobby/`:
 - `config.json` — API credentials (chmod 600)
 - `articles.duckdb` — Local article database
+- `fulltext/` — One directory per paper (markdown, figures, original XML), plus
+  `index.json` mapping DOI → EID so a repeat fetch is a cache hit
 - `session/` — Last search/abstract results
 - `history` — REPL command history

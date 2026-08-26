@@ -44,10 +44,16 @@ The project default is **3.14**, pinned in `.python-version` — that is what `u
 `scopus_for_dobby/skill/<name>/` holds the agent-facing documentation, shipped as package data (`skill/*/SKILL.md`, `skill/*/references/*.md`) and installed by `scopus-for-dobby skill install`. Two registries in `core/skill.py`: `SKILLS` (what ships) and `TARGETS` (which agents, where). Adding either is one entry.
 
 - `scopus-for-dobby` — driving the CLI
+- `paper-fulltext` — reading one paper's body (methods, a quote, a figure)
 - `citation-analysis` — reading a citation graph
 - `corpus-profiling` — characterising a large set of papers by topic/keyword
 
-Skill descriptions are a shared trigger space: each must claim its own question and explicitly disclaim the others', or the wrong one loads. `corpus-profiling` in particular must not fire when a plain `db list` is what was wanted — its description says so, and a test asserts the descriptions do not collide.
+Only the first is tool-shaped ("how do I use this CLI?"); the other three are
+task-shaped and fire on a research question. A capability that answers a research
+question belongs in its own skill — buried in the CLI reference, it is only
+reachable by an agent that already decided to consult a manual.
+
+Skill descriptions are a shared trigger space: each must claim its own question and explicitly disclaim the others', or the wrong one loads. `corpus-profiling` in particular must not fire when a plain `db list` is what was wanted — its description says so, and a test asserts the descriptions do not collide. `paper-fulltext` carries the same risk in the other direction: fetching a body spends metered Elsevier quota, so its description has to disclaim ordinary searching and listing, and only one skill may claim the body question at a time.
 
 Because they ship with the code, **the skills are part of the change**: any edit to CLI behavior, install extras, or the daemon model must update the relevant `SKILL.md` and `references/` in the same commit. The out-of-repo copy this replaced drifted badly — it documented the removed lazy-spawn daemon for weeks.
 

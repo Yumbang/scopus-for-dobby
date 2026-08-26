@@ -6,7 +6,6 @@ from ~/.scopus-for-dobby/config.json and respects Elsevier rate limits.
 Base URL: https://api.elsevier.com
 """
 
-import contextlib
 import json
 import logging
 import time
@@ -72,6 +71,11 @@ def _quota_bucket(endpoint: str) -> str:
     """
     if "/content/article" in endpoint and "/content/abstract" not in endpoint:
         return "sciencedirect-article"
+    if "/content/object" in endpoint:
+        # Figure/object retrieval alongside Article Retrieval. Falling through
+        # to the default would file it under the Scopus budget — the exact
+        # mislabelling this function exists to prevent.
+        return "sciencedirect-object"
     if "/content/abstract" in endpoint:
         return "scopus-abstract"
     if "/content/search/scopus" in endpoint:
@@ -255,11 +259,18 @@ def request_elsevier(
     Returns ``{"status": int, "text": str, "remaining": int|None, "reset": str|None}``.
     """
     resp = api_get_raw(endpoint, params=params, config=config, accept=accept, timeout=timeout)
-    remaining = resp.headers.get("X-RateLimit-Remaining")
     reset = resp.headers.get("X-RateLimit-Reset")
-    if remaining is not None:
-        with contextlib.suppress(ValueError, TypeError):
-            _cache_quota(int(remaining), reset, bucket=_quota_bucket(endpoint))
+    # Parse once. Article Retrieval often omits the header entirely, and a
+    # non-numeric value must degrade to "unknown" rather than raise mid-batch.
+    remaining: int | None = None
+    raw_remaining = resp.headers.get("X-RateLimit-Remaining")
+    if raw_remaining is not None:
+        try:
+            remaining = int(raw_remaining)
+        except (TypeError, ValueError):
+            logger.debug("Unparseable X-RateLimit-Remaining: %r", raw_remaining)
+        else:
+            _cache_quota(remaining, reset, bucket=_quota_bucket(endpoint))
 
     if resp.status_code == 429:
         reset_msg = ""
@@ -274,6 +285,6 @@ def request_elsevier(
     return {
         "status": resp.status_code,
         "text": resp.text or "",
-        "remaining": int(remaining) if remaining is not None else None,
+        "remaining": remaining,
         "reset": reset,
     }

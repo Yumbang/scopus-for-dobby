@@ -13,11 +13,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from xml.etree import ElementTree as ET
 
+import requests
+
 from scopus_for_dobby.core.mathml_latex import mathml_to_latex
 from scopus_for_dobby.utils.api_client import QuotaExceeded, api_get_raw
 
 # Bump when the markdown renderer changes so cached bundles regenerate.
-BUNDLE_VERSION = 3
+BUNDLE_VERSION = 4
 
 _SAFE_SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -121,8 +123,13 @@ def _display_math(el: ET.Element) -> str:
 def _list_md(el: ET.Element) -> str:
     lines = []
     for item in el.iter():
-        if _local(item.tag) == "list-item":
-            lines.append(f"- {_text(item)}")
+        if _local(item.tag) != "list-item":
+            continue
+        # ce:label is the rendered bullet ("1.", "(a)") — markdown supplies its own.
+        body = " ".join(_text(c) for c in item if _local(c.tag) != "label").strip()
+        body = body or _text(item)
+        if body:
+            lines.append(f"- {body}")
     return "\n".join(lines)
 
 
@@ -135,6 +142,13 @@ def _para_blocks(parent: ET.Element) -> list[str]:
             continue
         if name in {"para", "simple-para", "nomenclature-para", "display", "formula"}:
             t = inline(c).strip()
+            if t:
+                blocks.append(t)
+        elif name == "list":
+            # Elsevier hangs procedure steps straight off ce:section. Dropping
+            # these silently loses numbered Methods steps and leaves the
+            # surrounding prose looking continuous.
+            t = _list_md(c).strip()
             if t:
                 blocks.append(t)
         elif name in {"section-title", "label"}:
@@ -289,6 +303,11 @@ def _outline(nodes: list[dict]) -> list[dict]:
     ]
 
 
+def _cell(text: str) -> str:
+    """Escape a table cell. A bare ``|`` would open a column mid-value."""
+    return text.replace("|", "\\|")
+
+
 def _table_md(table: ET.Element) -> str:
     label = _text(_child(table, "label"))
     caption = _text(_child(table, "caption"))
@@ -312,7 +331,7 @@ def _table_md(table: ET.Element) -> str:
     if not rows:
         return "\n".join(lines).rstrip() + "\n"
     width = max(len(r) for r in rows)
-    norm = [r + [""] * (width - len(r)) for r in rows]
+    norm = [[_cell(c) for c in r] + [""] * (width - len(r)) for r in rows]
     header, body = norm[0], norm[1:]
     lines.append("| " + " | ".join(header) + " |")
     lines.append("| " + " | ".join("---" for _ in header) + " |")
@@ -344,7 +363,12 @@ def download_object(url: str) -> bytes | None:
     if "/content/object" not in endpoint:
         return None
     params = {k: v[0] for k, v in parse_qs(parsed.query).items() if v}
-    resp = api_get_raw(endpoint, params=params or None, accept="*/*", timeout=60)
+    try:
+        resp = api_get_raw(endpoint, params=params or None, accept="*/*", timeout=60)
+    except requests.RequestException:
+        # A figure is an optional asset. Losing one to a network blip must not
+        # cost the caller the article text it already paid a request for.
+        return None
     if resp.status_code == 429:
         reset = resp.headers.get("X-RateLimit-Reset")
         raise QuotaExceeded("Rate limit exceeded while fetching a figure.", reset=reset)
@@ -445,6 +469,27 @@ def _render_tables(dest: Path, article: ET.Element) -> list[dict]:
     return out
 
 
+def _render_references(dest: Path, root: ET.Element) -> str | None:
+    """Write ``references.md``. Returns the relative path, or None if absent."""
+    bib = _find(root, "bibliography")
+    if bib is None:
+        return None
+    entries: list[str] = []
+    for ref in bib.iter():
+        if _local(ref.tag) != "bib-reference":
+            continue
+        label = _text(_child(ref, "label"))
+        body = " ".join(_text(c) for c in ref if _local(c.tag) != "label").strip()
+        body = body or _text(ref)
+        if not body:
+            continue
+        entries.append(f"- {label} {body}".strip() if label else f"- {body}")
+    if not entries:
+        return None
+    _write(dest / "references.md", "\n".join(["# References", "", *entries]) + "\n")
+    return "references.md"
+
+
 def materialize(
     xml: str,
     dest: Path,
@@ -479,6 +524,7 @@ def materialize(
     objects = _collect_objects(root)
     figures = _render_figures(dest, article, objects, fetch_object)
     tables = _render_tables(dest, article)
+    references = _render_references(dest, root)
     (dest / "figures").mkdir(parents=True, exist_ok=True)
     (dest / "tables").mkdir(parents=True, exist_ok=True)
 
@@ -492,6 +538,7 @@ def materialize(
         "sections": _outline(section_nodes),
         "figures": figures,
         "tables": tables,
+        "references": references,
     }
     _write(dest / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     return manifest

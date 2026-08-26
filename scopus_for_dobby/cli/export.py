@@ -30,7 +30,7 @@ from ._output import handle_error
 )
 @handle_error
 def export_cmd(fmt, output, tag, collection, from_search):
-    """Export articles to XLSX or BibTeX.
+    """Export articles to XLSX, BibTeX, or RIS.
 
     By default, exports from the local database. Use --from-last-search
     to export the current search results directly.

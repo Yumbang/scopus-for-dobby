@@ -79,6 +79,7 @@ It is **single-user, local-only**. No login, no cloud sync, no multi-tenant conc
 | `notes` | long text | User-written. Often empty. Markdown-ish but render as plain. |
 | `addedAt` | timestamp | "Added 3 days ago" — useful for sort. |
 | `updatedAt` | timestamp | When the user last edited tags/notes. |
+| `fulltextFetchedAt` | timestamp or empty | The paper's body is cached locally. Empty for most rows. **Design opportunity:** a "have the full text" affordance — badge, filter, or open-the-bundle action. |
 
 ### Collection
 - A named bucket. `name` is the primary key (yes, the string itself).
