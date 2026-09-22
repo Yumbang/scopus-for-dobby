@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import click
+from click.core import ParameterSource
 
 PID_FILE = Path.home() / ".scopus-for-dobby" / "daemon.pid"
 PORT_FILE = Path.home() / ".scopus-for-dobby" / "daemon.port"
@@ -83,6 +84,24 @@ def _port_responds(port: int) -> bool:
     return True
 
 
+def _port_is_free(port: int) -> bool:
+    """True if we could bind this local port right now."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _first_free_port(start: int, tries: int = 4) -> int | None:
+    """First bindable port at or after ``start``. None if all are taken."""
+    for candidate in range(start, start + tries):
+        if _port_is_free(candidate):
+            return candidate
+    return None
+
+
 def daemon_endpoint() -> str | None:
     """Return ``http://127.0.0.1:<port>`` if a live daemon PID file exists."""
     if not PID_FILE.exists() or not PORT_FILE.exists():
@@ -129,7 +148,10 @@ def register(cli):
         help="Self-shutdown after N seconds with no requests "
         "(0 = run forever). Default 600 in --background mode.",
     )
-    def serve(host: str, port: int, reload: bool, background: bool, idle_timeout: float):
+    @click.pass_context
+    def serve(
+        ctx, host: str, port: int, reload: bool, background: bool, idle_timeout: float
+    ):
         """Run the HTTP daemon. CLI/GUI clients attach to it for all DB access."""
         try:
             import uvicorn
@@ -147,6 +169,23 @@ def register(cli):
         if existing:
             click.echo(f"Daemon already running at {existing}", err=True)
             sys.exit(1)
+
+        # The default port is a guess, not a request: 8765 is popular and this
+        # machine may already have something on it. An explicit --port is a
+        # request, so it is left to fail loudly rather than silently moving.
+        # `daemon.port` is what clients read, so a shifted port is still found.
+        if ctx.get_parameter_source("port") is not ParameterSource.COMMANDLINE:
+            free = _first_free_port(port)
+            if free is None:
+                click.echo(
+                    f"Ports {port}-{port + 3} are all in use. "
+                    f"Free one, or pass --port explicitly.",
+                    err=True,
+                )
+                sys.exit(1)
+            if free != port:
+                click.echo(f"Port {port} is busy; using {free}.", err=True)
+                port = free
 
         _write_pid(port)
 

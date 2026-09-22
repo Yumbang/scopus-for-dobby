@@ -59,3 +59,45 @@ def test_ensure_daemon_returns_existing_endpoint_without_spawn(
 
     assert daemon_mod.ensure_daemon() == "http://127.0.0.1:18765"
     assert spawned == []  # short-circuited; no fork attempted
+
+
+class TestBusyDefaultPort:
+    """8765 is a popular port; the default is a guess, not a request.
+
+    The macOS GUI shells out to `serve --background` with no --port, so a
+    machine with anything on 8765 could never start a daemon from the app.
+    """
+
+    def test_finds_the_next_free_port(self, monkeypatch):
+        import socket
+
+        from scopus_for_dobby.cli import serve as serve_mod
+
+        # Hold 8765 for real, the way another service would.
+        held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        held.bind(("127.0.0.1", 0))
+        taken = held.getsockname()[1]
+        held.listen(1)
+        try:
+            assert serve_mod._port_is_free(taken) is False
+            assert serve_mod._first_free_port(taken) != taken
+            assert serve_mod._first_free_port(taken) > taken
+        finally:
+            held.close()
+
+    def test_reports_none_when_the_whole_range_is_taken(self, monkeypatch):
+        from scopus_for_dobby.cli import serve as serve_mod
+
+        monkeypatch.setattr(serve_mod, "_port_is_free", lambda _p: False)
+        assert serve_mod._first_free_port(9000, tries=3) is None
+
+    def test_a_free_port_is_returned_unchanged(self):
+        import socket
+
+        from scopus_for_dobby.cli import serve as serve_mod
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        free = s.getsockname()[1]
+        s.close()
+        assert serve_mod._first_free_port(free) == free

@@ -23,7 +23,7 @@ State files under `~/.scopus-for-dobby/`:
 | `articles.duckdb` | The database |
 | `config.json` | API key, tier, OpenAlex email, cached quota (chmod 600) |
 | `session/` | Last search/abstract, working collection |
-| `daemon.pid`, `daemon.port` | Present only while a daemon runs (default port 8765) |
+| `daemon.pid`, `daemon.port` | Present only while a daemon runs. Read `daemon.port` rather than assuming 8765 — see below |
 | `daemon.log` | Daemon diagnostics — rotates at 2 MB, keeps 2 backups |
 
 ## Symptoms → fixes
@@ -37,6 +37,13 @@ connection:
 ```bash
 scopus-for-dobby serve        # another terminal; needs the [gui] extra
 ```
+
+**The daemon is not on 8765.**
+That port is popular — other tools take it. With no explicit `--port`, `serve`
+treats the default as a guess and moves to the next free port, announcing
+`Port 8765 is busy; using 8767.` An explicit `--port` is a request and fails
+loudly instead of moving. Clients read `~/.scopus-for-dobby/daemon.port`, so
+they follow it either way; anything that hardcodes 8765 will not.
 
 **`serve` says the `[gui]` extra is required.**
 Expected on a default install. `uv tool install --reinstall --editable ".[gui]"`
