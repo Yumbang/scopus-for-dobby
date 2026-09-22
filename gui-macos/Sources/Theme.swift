@@ -202,3 +202,23 @@ struct PrimaryButtonStyle: ButtonStyle {
             )
     }
 }
+
+/// What this build is, for the footer.
+///
+/// Marketing version alone does not answer "am I running the binary I just
+/// built" — it only changes on release. The executable's modification date
+/// does, and costs one stat.
+enum BuildInfo {
+    static let version: String =
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+
+    static let built: String? = {
+        guard let exe = Bundle.main.executableURL,
+              let date = try? exe.resourceValues(forKeys: [.contentModificationDateKey])
+                  .contentModificationDate
+        else { return nil }
+        let f = DateFormatter()
+        f.dateFormat = "d MMM HH:mm"
+        return f.string(from: date)
+    }()
+}

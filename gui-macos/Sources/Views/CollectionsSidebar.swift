@@ -215,29 +215,57 @@ struct CollectionsSidebar: View {
         .buttonStyle(.plain)
     }
 
+    private var versionLine: String {
+        var parts = ["app \(BuildInfo.version)"]
+        if let built = BuildInfo.built { parts.append("built \(built)") }
+        parts.append("CLI \(state.daemonVersion ?? "—")")
+        return parts.joined(separator: " · ")
+    }
+
+    private var versionTooltip: String {
+        let cli = state.daemonVersion.map { "CLI \($0)" } ?? "CLI version unknown — daemon has not answered"
+        let built = BuildInfo.built.map { "built \($0)" } ?? "build date unavailable"
+        return "App \(BuildInfo.version), \(built)\n\(cli)\n"
+            + "The app and the CLI are installed separately and version independently."
+    }
+
     private var footer: some View {
         let isUp: Bool = {
             if case .running = state.daemonStatus { return true } else { return false }
         }()
         let dotColor = isUp ? Theme.good : Theme.bad
-        return HStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .fill(dotColor.opacity(0.22))
-                    .frame(width: 13, height: 13)
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: 7, height: 7)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(dotColor.opacity(0.22))
+                        .frame(width: 13, height: 13)
+                    Circle()
+                        .fill(dotColor)
+                        .frame(width: 7, height: 7)
+                }
+                Text(isUp ? "Daemon · live" : "Daemon · offline")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.inkMute)
+                Spacer()
+                Text(client.portLabel ?? "—")
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.inkMute)
+                    .opacity(0.7)
             }
-            Text(isUp ? "Daemon · live" : "Daemon · offline")
-                .font(.system(size: 11))
-                .foregroundStyle(Theme.inkMute)
-            Spacer()
-            Text(client.portLabel ?? "—")
-                .font(.system(size: 11))
+            // The app and the CLI ship separately — a rebuilt .app and a
+            // `uv tool install` — so "which half is stale" is otherwise
+            // unanswerable from inside the app. Their version numbers are
+            // independent, so this reports both rather than comparing them;
+            // the build date is what actually tells you the app is old.
+            Text(versionLine)
+                .font(.system(size: 10))
                 .monospacedDigit()
                 .foregroundStyle(Theme.inkMute)
-                .opacity(0.7)
+                .opacity(0.6)
+                .lineLimit(1)
+                .help(versionTooltip)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 8)

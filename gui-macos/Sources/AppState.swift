@@ -50,6 +50,8 @@ enum SidebarSelection: Hashable {
 @MainActor
 final class AppState: ObservableObject {
     @Published var daemonStatus: DaemonStatus = .unknown
+    /// Version the daemon reports on /health. nil until it answers once.
+    @Published var daemonVersion: String?
     @Published var collections: [CollectionInfo] = []
     @Published var articles: [Article] = []
     @Published var selection: SidebarSelection = .allArticles
@@ -258,7 +260,8 @@ final class AppState: ObservableObject {
     func refreshDaemonStatus() async {
         do {
             _ = try DaemonClient.shared.discover()
-            _ = try await DaemonClient.shared.health()
+            let info = try await DaemonClient.shared.health()
+            daemonVersion = info.version ?? daemonVersion
             daemonStatus = .running
             lastError = nil
         } catch {
@@ -298,7 +301,8 @@ final class AppState: ObservableObject {
             try? await Task.sleep(nanoseconds: 200_000_000)
             do {
                 _ = try DaemonClient.shared.discover()
-                _ = try await DaemonClient.shared.health()
+                let info = try await DaemonClient.shared.health()
+                daemonVersion = info.version ?? daemonVersion
                 await bootstrap()
                 return
             } catch {

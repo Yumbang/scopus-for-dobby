@@ -294,3 +294,21 @@ private struct LossyArticle: Decodable {
         self.value = try? Article(from: decoder)
     }
 }
+
+/// Response shape from ``GET /health``.
+///
+/// ``version`` is the daemon's; the app carries its own. They are installed
+/// separately — a `uv tool install` and a rebuilt `.app` — so they drift, and
+/// the footer says so rather than leaving the user to guess which half is old.
+struct HealthInfo: Decodable {
+    var status: String?
+    var version: String?
+    var ftsAvailable: Bool?
+    var dbPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status, version
+        case ftsAvailable = "fts_available"
+        case dbPath = "db_path"
+    }
+}

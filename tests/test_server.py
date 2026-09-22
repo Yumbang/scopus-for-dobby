@@ -167,3 +167,16 @@ def test_article_detail_carries_collection_membership(client):
 def test_article_not_in_a_collection_reports_empty_membership(client):
     client.post("/articles", json={"entries": [_entry("2-s2.0-mem-2")]})
     assert client.get("/articles/2-s2.0-mem-2").json()["collections"] == []
+
+
+def test_health_reports_the_daemon_version(client):
+    """The GUI and the CLI are installed separately and drift apart silently.
+
+    A version on /health is what lets the app notice it is older than the
+    daemon it is driving.
+    """
+    from scopus_for_dobby import __version__
+
+    body = client.get("/health").json()
+    assert body["version"] == __version__
+    assert body["status"] == "ok"

@@ -27,6 +27,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any
 
+from scopus_for_dobby import __version__
 from scopus_for_dobby.core import article_db as adb
 
 logger = logging.getLogger(__name__)
@@ -109,8 +110,12 @@ def build_app(idle_timeout: float | None = None):
 
     @app.get("/health")
     def health():
+        # `version` is what lets a client notice it is older than the daemon it
+        # is talking to. The macOS app and the CLI are installed separately and
+        # drift apart silently otherwise.
         return {
             "status": "ok",
+            "version": __version__,
             "fts_available": adb.fts_available(),
             "db_path": str(adb.DB_PATH),
         }

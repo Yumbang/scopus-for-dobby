@@ -58,7 +58,7 @@ final class DaemonClient: ObservableObject {
         return url
     }
 
-    func health() async throws -> Bool {
+    func health() async throws -> HealthInfo {
         let url = try resolved("/health")
         // Short per-request timeout: /health gates the poll cadence and a hung
         // request must not stall it past one tick. The default URLSession
@@ -71,7 +71,7 @@ final class DaemonClient: ObservableObject {
                 (response as? HTTPURLResponse)?.statusCode ?? -1,
                 String(data: data, encoding: .utf8) ?? "")
         }
-        return true
+        return (try? JSONDecoder().decode(HealthInfo.self, from: data)) ?? HealthInfo()
     }
 
     func collections() async throws -> [CollectionInfo] {
