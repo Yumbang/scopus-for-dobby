@@ -103,6 +103,91 @@ struct WrapHStack: Layout {
     }
 }
 
+/// Chip palette. All five map onto existing ``Theme`` tokens — nothing here
+/// introduces a colour that isn't already in `tokens.css`.
+enum ChipTone {
+    /// Neutral chip — tags, affiliations, plain facts.
+    case neutral
+    /// Accent pill — state the user is currently causing (an active filter,
+    /// a selection count) and OpenAlex-derived vocabulary.
+    case accent
+    /// Semantic. ``Theme.good``/``warn``/``bad`` were previously used only by
+    /// the daemon status dot.
+    case good, warn, bad
+
+    var ink: Color {
+        switch self {
+        case .neutral: return Theme.tagInk
+        case .accent:  return Theme.accentInk
+        case .good:    return Theme.good
+        case .warn:    return Theme.warn
+        case .bad:     return Theme.bad
+        }
+    }
+
+    var background: Color {
+        switch self {
+        case .neutral: return Theme.tagBg
+        case .accent:  return Theme.accentSoft
+        // The semantic tokens are foreground colours; tokens.css pairs no
+        // surface with them, so tint rather than invent a hex literal here.
+        case .good:    return Theme.good.opacity(0.16)
+        case .warn:    return Theme.warn.opacity(0.16)
+        case .bad:     return Theme.bad.opacity(0.16)
+        }
+    }
+}
+
+enum ChipSize {
+    /// Detail-pane chips.
+    case regular
+    /// Header pills and list-row badges, where vertical space is tight.
+    case small
+
+    var font: CGFloat { self == .regular ? 11 : 10.5 }
+    var hPadding: CGFloat { self == .regular ? 9 : 6 }
+    var vPadding: CGFloat { self == .regular ? 3 : 1 }
+}
+
+/// The pill every chip and badge in the app is built from: capsule, padding,
+/// palette. Split from ``Chip`` because some chips carry interactive content
+/// (a hover-revealed remove button) rather than a plain label.
+struct ChipShell<Content: View>: View {
+    var tone: ChipTone = .neutral
+    var size: ChipSize = .regular
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .padding(.horizontal, size.hPadding)
+            .padding(.vertical, size.vPadding)
+            .background(tone.background, in: Capsule())
+    }
+}
+
+/// A read-only pill: optional SF Symbol, then a label.
+struct Chip: View {
+    let label: String
+    var systemImage: String? = nil
+    var tone: ChipTone = .neutral
+    var size: ChipSize = .regular
+
+    var body: some View {
+        ChipShell(tone: tone, size: size) {
+            HStack(spacing: 4) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: size.font - 1.5, weight: .medium))
+                }
+                Text(label)
+                    .font(.system(size: size.font, weight: .medium))
+            }
+            .foregroundStyle(tone.ink)
+            .lineLimit(1)
+        }
+    }
+}
+
 /// Primary button — accent fill + off-white label. Matches `.btn-primary` in components.css.
 struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {

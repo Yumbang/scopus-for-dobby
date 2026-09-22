@@ -85,6 +85,15 @@ struct ArticleListView: View {
         state.selectedArticleEid = eid
     }
 
+    /// The count beside the scope title. ``state.articles.count`` alone lies
+    /// during a search — it is the hit count sitting under a heading that
+    /// still says "All articles". Show the scope's real size, and say how
+    /// much of it the search is showing.
+    private var countLabel: String {
+        guard let total = state.selectionTotal else { return "· \(state.articles.count)" }
+        return state.isSearchActive ? "· \(state.articles.count) of \(total)" : "· \(total)"
+    }
+
     private var header: some View {
         HStack(spacing: 10) {
             HStack(spacing: 6) {
@@ -96,18 +105,13 @@ struct ArticleListView: View {
                     .tracking(-0.15)
                     .foregroundStyle(Theme.ink)
                     .lineLimit(1)
-                Text("· \(state.articles.count)")
+                Text(countLabel)
                     .font(.system(size: 12))
                     .monospacedDigit()
                     .foregroundStyle(Theme.inkMute)
                 if state.multiSelection.count > 1 {
-                    Text("· \(state.multiSelection.count) selected")
-                        .font(.system(size: 11, weight: .medium))
-                        .tracking(0.2)
-                        .foregroundStyle(Theme.accentInk)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Theme.accentSoft, in: Capsule())
+                    Chip(label: "\(state.multiSelection.count) selected",
+                         tone: .accent, size: .small)
                 }
             }
             Spacer()
@@ -164,14 +168,8 @@ struct ArticleListView: View {
                 .focused($searchFocused)
                 .frame(minWidth: 140, maxWidth: 220)
             if state.selection != .allArticles, !state.searchQuery.isEmpty {
-                Text("in \(state.selection.displayTitle)")
-                    .font(.system(size: 10.5))
-                    .tracking(0.3)
-                    .foregroundStyle(Theme.accentInk)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-                    .background(Theme.accentSoft, in: Capsule())
-                    .lineLimit(1)
+                Chip(label: "in \(state.selection.displayTitle)",
+                     tone: .accent, size: .small)
             }
             if !state.searchQuery.isEmpty {
                 Button { state.clearSearch() } label: {
@@ -246,6 +244,25 @@ private struct ArticleRow: View {
         return .clear
     }
 
+    /// "Open access" when only Scopus's flag says so; the OpenAlex colour
+    /// when there is one, because gold and bronze are not the same promise.
+    private var openAccessHelp: String {
+        guard let status = article.openAccessStatus else { return "Open access" }
+        return "Open access · \(status)"
+    }
+
+    private func dateSuffix(_ timestamp: String?) -> String {
+        let day = (timestamp ?? "").prefix(10)
+        return day.isEmpty ? "" : " · \(day)"
+    }
+
+    private func glyph(_ name: String, tint: Color, help: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 10))
+            .foregroundStyle(tint)
+            .help(help)
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             Rectangle()
@@ -272,6 +289,18 @@ private struct ArticleRow: View {
                         Text(String(year)).foregroundStyle(Theme.inkSoft)
                     }
                     Spacer(minLength: 6)
+                    // Trailing badges. Glyph-only and tooltip-labelled so the
+                    // row stays one line at any pane width.
+                    if article.isFreeToRead {
+                        glyph("lock.open.fill", tint: Theme.good, help: openAccessHelp)
+                    }
+                    if article.hasNote {
+                        glyph("note.text", tint: Theme.inkMute, help: "Has a note")
+                    }
+                    if article.hasCachedFulltext {
+                        glyph("doc.text.fill", tint: Theme.inkMute,
+                              help: "Full text cached" + dateSuffix(article.fulltextFetchedAt))
+                    }
                     if let cited = article.citedBy, cited > 0 {
                         Image(systemName: "quote.bubble")
                             .font(.system(size: 10))

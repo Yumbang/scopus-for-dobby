@@ -53,10 +53,14 @@ struct CollectionsSidebar: View {
     private var librarySection: some View {
         VStack(alignment: .leading, spacing: 2) {
             sectionTitle("Library")
+            // ``libraryTotal`` (the daemon's ``total_in_db``), not
+            // ``articles.count`` — the latter is whatever is loaded right
+            // now, so this row used to show the selected collection's size,
+            // or the hit count while searching.
             sidebarRow(
                 label: "All articles",
                 systemImage: "tray.full",
-                count: state.articles.count,
+                count: state.libraryTotal ?? state.articles.count,
                 isActive: state.selection == .allArticles
             ) {
                 state.selectSidebar(.allArticles)

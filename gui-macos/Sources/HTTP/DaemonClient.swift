@@ -79,11 +79,15 @@ final class DaemonClient: ObservableObject {
         return resp.collections
     }
 
-    func articles(collection: String? = nil, limit: Int = 200) async throws -> [Article] {
+    /// Returns the whole envelope, not just the rows: ``total_in_db`` is the
+    /// only honest source for "how big is the library" and ``total_matching``
+    /// for "how big is this collection". Dropping them here is what made the
+    /// sidebar and list header report the length of the currently-loaded
+    /// array instead.
+    func articles(collection: String? = nil, limit: Int = 200) async throws -> ArticleListResponse {
         var items = [URLQueryItem(name: "limit", value: "\(limit)")]
         if let collection { items.append(URLQueryItem(name: "collection", value: collection)) }
-        let resp: ArticleListResponse = try await get(buildPath("/articles", queryItems: items))
-        return resp.articles
+        return try await get(buildPath("/articles", queryItems: items))
     }
 
     func article(eid: String) async throws -> Article {
@@ -101,16 +105,18 @@ final class DaemonClient: ObservableObject {
 
     // MARK: - search
 
-    func searchFTS(query: String, limit: Int = 100) async throws -> [Article] {
+    /// Like ``articles(collection:limit:)``, returns the envelope. ``/search``
+    /// reports its hit count under ``total`` rather than ``total_matching``
+    /// and carries no ``total_in_db`` — see ``ArticleListResponse``.
+    func searchFTS(query: String, limit: Int = 100) async throws -> ArticleListResponse {
         // ``URLQueryItem`` is the only path that correctly percent-encodes
         // value-internal ``&`` and ``=``. Concatenating an
         // ``addingPercentEncoding(.urlQueryAllowed)`` string would let a
         // query like ``foo&limit=99999`` smuggle a second ``limit`` param.
-        let resp: ArticleListResponse = try await get(buildPath("/search/fts", queryItems: [
+        return try await get(buildPath("/search/fts", queryItems: [
             URLQueryItem(name: "query", value: query),
             URLQueryItem(name: "limit", value: "\(limit)"),
         ]))
-        return resp.articles
     }
 
     /// Build a path + querystring tuple suitable for ``get()`` from a path and

@@ -56,6 +56,19 @@ final class AppState: ObservableObject {
     @Published var selectedArticleEid: String? = nil
     @Published var lastError: String? = nil
 
+    /// Rows in the whole library, from the ``total_in_db`` field every
+    /// ``GET /articles`` response carries. Distinct from ``articles.count``,
+    /// which is only what is currently loaded — a collection's rows while a
+    /// collection is selected, the hit list while searching. Nil until the
+    /// first ``/articles`` response lands.
+    @Published private(set) var libraryTotal: Int? = nil
+
+    /// Rows matching the current sidebar selection, from ``total_matching``.
+    /// Only a ``/articles`` call reports it, so it is left alone (rather than
+    /// cleared) by a search that never makes one — the scope's size does not
+    /// change just because the user typed in the search box.
+    @Published private(set) var scopeTotal: Int? = nil
+
     /// Multi-selection set in the article list. When this set has more than
     /// one entry the detail pane swaps to a batch panel; ``selectedArticleEid``
     /// continues to track "the focused row for single-row affordances" (last
@@ -80,6 +93,24 @@ final class AppState: ObservableObject {
     @Published var isSearching: Bool = false
 
     var selectedCollection: String? { selection.collectionName }
+
+    /// True when the list is showing search hits rather than the full scope.
+    var isSearchActive: Bool {
+        !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// How many articles the current sidebar scope holds, regardless of what
+    /// the list is currently showing. For a collection the sidebar's own
+    /// ``/collections`` count is authoritative and always fresh; ``scopeTotal``
+    /// covers the gap for a collection not (yet) in that list.
+    var selectionTotal: Int? {
+        switch selection {
+        case .allArticles:
+            return libraryTotal
+        case .collection(let name):
+            return collections.first { $0.name == name }?.articleCount ?? scopeTotal
+        }
+    }
 
     /// Highest event id we've already reflected in the views; used as the
     /// ``?since=`` cursor for ``GET /events``.
@@ -150,7 +181,7 @@ final class AppState: ObservableObject {
             firstError = firstError ?? error
         }
         do {
-            self.articles = try await artsTask
+            apply(page: try await artsTask)
         } catch {
             firstError = firstError ?? error
         }
@@ -174,14 +205,29 @@ final class AppState: ObservableObject {
 
     func reloadArticles() async {
         do {
-            self.articles = try await articlesForCurrentSelection()
+            apply(page: try await articlesForCurrentSelection())
         } catch {
             self.lastError = error.localizedDescription
         }
     }
 
+    /// One list fetch: the rows to show plus whatever the envelope said about
+    /// the totals behind them. A nil total means "this fetch had nothing to
+    /// say about it", not "zero" — see ``apply(page:)``.
+    private struct ArticlePage {
+        let articles: [Article]
+        let libraryTotal: Int?
+        let scopeTotal: Int?
+    }
+
+    private func apply(page: ArticlePage) {
+        self.articles = page.articles
+        if let n = page.libraryTotal { self.libraryTotal = n }
+        if let n = page.scopeTotal { self.scopeTotal = n }
+    }
+
     /// Search-aware article fetch. Always honors the current sidebar selection.
-    private func articlesForCurrentSelection() async throws -> [Article] {
+    private func articlesForCurrentSelection() async throws -> ArticlePage {
         let q = searchQuery.trimmingCharacters(in: .whitespaces)
         if q.isEmpty {
             // Effectively-unbounded: covers 100k+ libraries. SwiftUI's
@@ -190,14 +236,23 @@ final class AppState: ObservableObject {
             // filter, which is fine at this scale on M-series Macs. Anything
             // larger should move to true server-side pagination — see plan
             // §scale.
-            return try await DaemonClient.shared.articles(collection: selectedCollection,
-                                                          limit: 200_000)
+            let resp = try await DaemonClient.shared.articles(collection: selectedCollection,
+                                                              limit: 200_000)
+            return ArticlePage(articles: resp.articles,
+                               libraryTotal: resp.totalInDb,
+                               scopeTotal: resp.totalMatching)
         }
         let hits = try await DaemonClient.shared.searchFTS(query: q, limit: 1000)
-        guard let coll = selectedCollection else { return hits }
-        let allowed = Set(try await DaemonClient.shared.articles(collection: coll, limit: 200_000)
-                          .map(\.eid))
-        return hits.filter { allowed.contains($0.eid) }
+        guard let coll = selectedCollection else {
+            // ``/search/fts`` reports only its own hit count — nothing about
+            // the library or the scope. Leave both totals as they were.
+            return ArticlePage(articles: hits.articles, libraryTotal: nil, scopeTotal: nil)
+        }
+        let scope = try await DaemonClient.shared.articles(collection: coll, limit: 200_000)
+        let allowed = Set(scope.articles.map(\.eid))
+        return ArticlePage(articles: hits.articles.filter { allowed.contains($0.eid) },
+                           libraryTotal: scope.totalInDb,
+                           scopeTotal: scope.totalMatching)
     }
 
     func refreshDaemonStatus() async {

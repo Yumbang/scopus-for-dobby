@@ -1,0 +1,139 @@
+/* =========================================================
+   scopus-for-dobby · design tokens
+   Map 1:1 to Theme.swift. All colors in sRGB hex unless noted.
+   --------------------------------------------------------- */
+
+:root {
+  /* —— Surfaces (warm paper) ——————————————— */
+  --paper:            #FAF9F5;   /* window background, list rows */
+  --paper-deep:       #F5F1EB;   /* sidebar, sunken surfaces */
+  --paper-edge:       #EDE7DC;   /* hairline dividers, hover wash */
+  --paper-sink:       #E6DFD2;   /* pressed / selected wash (non-accent) */
+
+  /* —— Ink (text) —————————————————————————— */
+  --ink:              #2A2723;   /* body / titles  (near-black, warm) */
+  --ink-soft:         #5C554B;   /* secondary metadata */
+  --ink-mute:         #8A8175;   /* tertiary, captions, separators */
+  --ink-faint:        #B8AE9F;   /* placeholder, disabled */
+
+  /* —— Accent (Anthropic ochre / clay) ——————— */
+  --accent:           #C96442;   /* primary actions, active sidebar */
+  --accent-deep:      #A8512F;   /* hover / pressed */
+  --accent-soft:      #F2E0D5;   /* selection wash, chip bg */
+  --accent-ink:       #6B2D14;   /* text on accent-soft */
+
+  /* —— Semantic (used sparingly) ——————————— */
+  --good:             #5A6E3F;   /* sage olive — success */
+  --warn:             #B07A2B;   /* amber — needs review */
+  --bad:              #8C3A2C;   /* burnt sienna — destructive */
+
+  /* —— Tag palette (low-chroma, paper-toned) — */
+  --tag-bg:           #ECE5D7;
+  --tag-ink:          #5C554B;
+
+  /* —— Type ——————————————————————————————— */
+  --font-serif: "Tiempos Text", "Charter", "New York", "Iowan Old Style", Georgia, serif;
+  --font-sans:  "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono:  "Berkeley Mono", "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+
+  /* type scale (pt-equivalent at 1×) */
+  --t-display: 28px;   /* daemon-down, empty hero */
+  --t-title:   20px;   /* article title (detail) */
+  --t-h:       15px;   /* section headline */
+  --t-body:    14px;   /* abstract, notes */
+  --t-row:     13px;   /* list rows */
+  --t-meta:    12px;   /* metadata strip */
+  --t-cap:     11px;   /* captions, chip text */
+
+  /* —— Geometry —————————————————————————— */
+  --r-chip:    999px;
+  --r-card:    8px;
+  --r-pill:    6px;
+  --hair:      1px;
+
+  /* —— Motion ——————————————————————————— */
+  --ease-paper: cubic-bezier(.2,.7,.3,1);
+  --t-fast:    120ms;
+  --t-med:     220ms;
+}
+
+/* —— Dark mode (deliberate twin, not inversion) ——————— */
+.theme-dark {
+  --paper:            #1F1E1B;
+  --paper-deep:       #181715;
+  --paper-edge:       #2C2A26;
+  --paper-sink:       #38352F;
+
+  --ink:              #ECE6D9;
+  --ink-soft:         #B5AC9C;
+  --ink-mute:         #847B6D;
+  --ink-faint:        #57514A;
+
+  --accent:           #D97757;       /* nudged up in luminance */
+  --accent-deep:      #E48E72;
+  --accent-soft:      #3A2A22;
+  --accent-ink:       #F2D3C2;
+
+  --good:             #8FA274;
+  --warn:             #D6A458;
+  --bad:              #C77160;
+
+  --tag-bg:           #2E2A24;
+  --tag-ink:          #B5AC9C;
+}
+
+/* —— Alt direction A · "Slate & Saffron" ——————————————
+   Cooler paper, golden accent, NY-style serif. Same skeleton. */
+.theme-slate {
+  --paper:            #F4F2EE;
+  --paper-deep:       #E9E6E0;
+  --paper-edge:       #DAD6CD;
+  --paper-sink:       #CDC8BD;
+
+  --ink:              #1F2024;
+  --ink-soft:         #4F5360;
+  --ink-mute:         #7B7E89;
+
+  --accent:           #B68632;
+  --accent-deep:      #8E6724;
+  --accent-soft:      #ECE0C2;
+  --accent-ink:       #553D14;
+
+  --tag-bg:           #DFDBD2;
+  --tag-ink:          #4F5360;
+
+  --font-serif: "New York", "Spectral", Charter, Georgia, serif;
+}
+
+/* —— Alt direction B · "Bookcloth & Indigo" —————————
+   Slightly cooler paper, deep-blue accent, slab-ish serif. */
+.theme-indigo {
+  --paper:            #F6F4EE;
+  --paper-deep:       #ECE8DE;
+  --paper-edge:       #DDD6C5;
+
+  --accent:           #3B4F8C;
+  --accent-deep:      #2A3A6C;
+  --accent-soft:      #DEE3F0;
+  --accent-ink:       #1A234A;
+
+  --font-serif: "Source Serif 4", "Charter", Georgia, serif;
+}
+
+/* =========================================================
+   Base resets used inside artboards
+   --------------------------------------------------------- */
+.app-frame * { box-sizing: border-box; }
+.app-frame {
+  font-family: var(--font-sans);
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "cv11";
+  letter-spacing: -0.005em;
+}
+
+/* canonical icon sizing */
+.icn { width: 14px; height: 14px; flex: 0 0 14px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.icn-sm { width: 12px; height: 12px; flex: 0 0 12px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+.icn-lg { width: 18px; height: 18px; flex: 0 0 18px; stroke: currentColor; fill: none; stroke-width: 1.5; }
