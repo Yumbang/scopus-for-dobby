@@ -23,8 +23,8 @@ It is **single-user, local-only**. No login, no cloud sync, no multi-tenant conc
 ### Core jobs-to-be-done
 1. **Browse** — see what's in the library, filter by collection, sort by date / citations / title.
 2. **Read** — open an article's metadata, abstract, DOI, keywords, tags, notes.
-3. **Curate** — add to / remove from collections, apply tags, write notes, merge collections (write path is **not yet built** — this is where you come in).
-4. **Search** — live full-text across title/abstract/keywords (also not yet built).
+3. **Curate** — add to / remove from collections, apply tags, write notes, merge collections. Built: `AppState` calls the daemon for each (`tagArticles`, `setNote`, `addToCollection`, `mergeCollections`).
+4. **Search** — live full-text across title, abstract, keywords and the user's own notes. Built, via `searchFTS`.
 
 ### Out of scope (do not design for)
 - PDF reading or attachment management
@@ -38,7 +38,9 @@ It is **single-user, local-only**. No login, no cloud sync, no multi-tenant conc
 ## 2. Architecture (so you know what's cheap vs expensive)
 
 ```
-┌──────────────┐   HTTP (127.0.0.1:8765)    ┌───────────────────────┐
+┌──────────────┐   HTTP (127.0.0.1, port    ┌───────────────────────┐
+│              │   from ~/.scopus-for-      │                       │
+│              │   dobby/daemon.port)       │                       │
 │  macOS App   │ ─────────────────────────► │  Python daemon        │
 │  (SwiftUI)   │ ◄───────────────────────── │  FastAPI + DuckDB     │
 └──────────────┘   JSON                     └───────────────────────┘

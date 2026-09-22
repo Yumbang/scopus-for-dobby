@@ -1005,7 +1005,7 @@ def list_articles(
 
 
 def search_articles_fts(query: str, limit: int = 50) -> dict:
-    """BM25-ranked full-text search over (title, abstract, keywords).
+    """BM25-ranked full-text search over (title, abstract, keywords, notes).
 
     Returns ``{"articles": [...], "total": n}`` where ``total`` is the
     number of matching rows (capped at ``limit``-equivalent semantics is

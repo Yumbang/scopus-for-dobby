@@ -90,7 +90,12 @@ def db_add(from_search, indices, from_abstract, tag, collection):
 @db.command("list")
 @click.option("--tag", "-t", default=None, help="Filter by tag")
 @click.option("--collection", "-c", default=None, help="Filter by collection")
-@click.option("--query", "-q", default=None, help="Text search in title/author/journal")
+@click.option(
+    "--query",
+    "-q",
+    default=None,
+    help="Text search in title/abstract/keywords/notes/author/journal",
+)
 @click.option(
     "--sort",
     "-s",

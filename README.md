@@ -231,7 +231,9 @@ database depends on whether a daemon is up:
 | No daemon running (default) | Opens DuckDB in-process. Nothing is spawned or left behind. |
 | Daemon running | Detects it via `~/.scopus-for-dobby/daemon.port` and goes over HTTP, so the GUI and CLI share one connection. |
 
-`scopus-for-dobby serve` starts a FastAPI process on `127.0.0.1:8765` (default)
+`scopus-for-dobby serve` starts a FastAPI process on `127.0.0.1:8765` — or the
+next free port, announcing the move, since that one is commonly taken; clients
+read `daemon.port` —
 that owns the only DuckDB connection. Start it when you want the macOS GUI, or
 two clients at once (e.g. an agent session alongside an open REPL) — without it,
 a second concurrent process hits DuckDB's file lock. Stop it by killing the PID

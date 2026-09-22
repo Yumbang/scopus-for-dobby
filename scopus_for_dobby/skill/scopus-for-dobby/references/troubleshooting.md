@@ -75,7 +75,7 @@ lsof -ti tcp:8765 | xargs kill 2>/dev/null   # orphan not matching the pid file
 ```
 
 **`db list --query` misses matches you expected.**
-By design: a plain substring (LIKE) match over title/author/journal/abstract —
+By design: a plain substring (LIKE) match over title/abstract/keywords/notes/author/journal —
 no stemming, no ranking. Try a shorter substring.
 
 **HTTP 429 from Scopus.**

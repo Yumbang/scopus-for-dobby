@@ -85,7 +85,7 @@ This is also a quality improvement for agent use of the CLI — agents currently
 
 There is no codegen. The schema surface is small enough that hand-mirrored Swift structs (`Article.swift`, `Collection.swift`, `Event.swift`) are cheaper than a code generator and its build step.
 
-**Rule:** any change to a column in `core/article_db.py` lands in the same PR as the matching Swift struct change. CI can enforce this with a simple test that parses the `CREATE TABLE` statements and diffs against a checked-in schema fingerprint, if drift becomes a problem.
+**Rule:** any change to a column in `core/article_db.py` lands in the same PR as the matching Swift struct change. CI enforces this: `tests/test_schema_fingerprint.py` hashes the `CREATE TABLE` statements and diffs against a checked-in fingerprint.
 
 ## Repository layout
 

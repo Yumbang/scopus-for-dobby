@@ -7,15 +7,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Always use `uv` for Python tooling (never pip, python -m pip, or virtualenv directly).
 
 ```bash
-# Install the CLI as a uv tool (makes `scopus-for-dobby` available on PATH)
-uv tool install --reinstall --editable .
-# ...add the optional daemon (macOS GUI / multi-process access):
+# Install the CLI as a uv tool (makes `scopus-for-dobby` available on PATH).
+# Use ".[gui]" if the macOS GUI is in play — its Launch button spawns this
+# binary, and the daemon server it starts lives in that extra.
 uv tool install --reinstall --editable ".[gui]"
+# CLI only, no daemon server (a bare install can still attach to one):
+uv tool install --reinstall --editable .
 
 # Dev environment (for running tests and linting)
 # `.python-version` pins 3.14, so bare `uv venv` picks it up — don't pass --python.
 uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"  # [dev] bundles cli + export deps for tests
+uv pip install -e ".[dev]"  # [dev] adds pytest/ruff + the daemon server
 
 # Lint and format (always use ruff, never pylint/flake8/black/isort)
 ruff check .
@@ -28,9 +30,13 @@ pytest
 pytest tests/test_core.py::TestArticleDB::test_add_entries
 ```
 
-After code changes, always reinstall the CLI tool before testing:
+After code changes, always reinstall the CLI tool before testing. Keep the
+extra you installed with — `--reinstall` rebuilds the environment from the
+spec you give it, so dropping `[gui]` here silently uninstalls the daemon
+server and the GUI's Launch button starts failing with
+"Starting a daemon requires the optional [gui] extra":
 ```bash
-uv tool install --reinstall --editable .
+uv tool install --reinstall --editable ".[gui]"
 ```
 
 Extras: `gui` is the only meaningful one (the HTTP daemon *server* — `fastapi`, `uvicorn`). `cli` and `export` are empty backwards-compat aliases; their contents are core dependencies. `httpx` is core too: the server is optional, but any install may have to talk to a daemon someone else started, and starting the macOS GUI puts every CLI invocation on that machine onto the HTTP path. Never reintroduce a dep the CLI needs at import time as an extra.

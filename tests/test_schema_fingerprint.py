@@ -5,7 +5,7 @@ by DuckDB for our schema is checked into ``tests/fixtures/schema_fingerprint.txt
 Any DDL change in ``core.article_db._ensure_schema`` will flip the
 fingerprint; the test fails with an actionable message instructing the
 developer to update both the fingerprint AND the matching Swift structs
-in ``gui-macos/Sources/Models/`` (forthcoming) before merging.
+in ``gui-macos/Sources/Models/`` before merging.
 
 To refresh the fingerprint after an intentional schema change, run the
 helper at the bottom of this file via:

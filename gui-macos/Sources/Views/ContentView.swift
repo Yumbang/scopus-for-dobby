@@ -56,7 +56,7 @@ private struct DaemonDownView: View {
                 .font(.serif(17, weight: .medium))
                 .foregroundStyle(Theme.ink)
 
-            Text("scopus-for-dobby's local server isn't responding on :8765. Start it from a terminal, or click Retry.")
+            Text("scopus-for-dobby's local server isn't responding. Start it from a terminal with `scopus-for-dobby serve`, or click Retry.")
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.inkMute)
                 .multilineTextAlignment(.center)
