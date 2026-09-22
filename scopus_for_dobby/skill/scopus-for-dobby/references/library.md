@@ -21,7 +21,7 @@ Saves are idempotent by EID: re-saving an existing article updates the row in pl
 db list                                # all articles, newest-added first
 db list --tag survey --sort cited      # filter by tag, sort by citations
 db list --collection thesis-refs
-db list --query "transformer" -n 10    # text search in title/author/journal/abstract
+db list --query "transformer" -n 10    # title/abstract/keywords/notes/author/journal
 ```
 
 Sort: `added` (default), `cited`, `date`, `title`. The default page size is 50 — pass `-n 1000` (or higher) when you need a whole collection, or the result silently truncates. The list result becomes the "current results" — indices in subsequent commands refer to it.
@@ -39,6 +39,10 @@ db stats                                       # counts, tag/year distribution, 
 ```
 
 `db tag/untag/remove` also accept `--eids-from-stdin` and `--eids-from-file FILE` for bulk operations from scripts. Watch the asymmetry: `db note` and `db info` take an EID argument **only** (no `--indices`) — resolve an index to its EID first, e.g. `--json db list | jq -r '.articles[2].eid'`.
+
+**Your own notes are searchable.** `db list -q` and the FTS search both match `notes`, so a note is a way to make a paper findable by a word that appears nowhere in it. Both search paths cover the same columns — title, abstract, keywords, notes, first author, journal — so a query means the same thing whether or not DuckDB's FTS extension loaded; only the ordering differs (FTS ranks by relevance, the fallback by citations). An existing database picks up note indexing on its next `db add`, or immediately via a rebuild.
+
+`db info <EID>` additionally reports `collections` — which collections hold that article. It is on the single-article record only, not on `db list` rows.
 
 ## Collections
 

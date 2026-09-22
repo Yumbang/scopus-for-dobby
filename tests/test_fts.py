@@ -114,3 +114,59 @@ class TestSearchArticlesLike:
         eids = [a["eid"] for a in result["articles"]]
         assert eids == ["e1"]
         assert result["total"] == 1
+
+
+class TestNotesAreSearchable:
+    """Notes are the one field the user wrote themselves.
+
+    They were indexed by nothing — not FTS, not the LIKE fallback, not
+    ``list_articles(query=)`` — while the GUI's empty-search copy promised
+    they were searched.
+    """
+
+    def test_fts_finds_a_note_only_match(self, fts_or_skip):
+        db_mod.add_entries([_entry("2-s2.0-n1", "Membrane fouling")])
+        db_mod.set_note("2-s2.0-n1", "zzzuniquetoken worth rereading")
+        db_mod.rebuild_fts()
+        hits = db_mod.search_articles_fts("zzzuniquetoken")["articles"]
+        assert [a["eid"] for a in hits] == ["2-s2.0-n1"]
+
+    def test_like_fallback_finds_a_note_only_match(self, tmp_db):
+        db_mod.add_entries([_entry("2-s2.0-n1", "Membrane fouling")])
+        db_mod.set_note("2-s2.0-n1", "zzzuniquetoken worth rereading")
+        hits = db_mod.search_articles_like("zzzuniquetoken")["articles"]
+        assert [a["eid"] for a in hits] == ["2-s2.0-n1"]
+
+    def test_list_articles_query_finds_a_note_only_match(self, tmp_db):
+        db_mod.add_entries([_entry("2-s2.0-n1", "Membrane fouling")])
+        db_mod.set_note("2-s2.0-n1", "zzzuniquetoken worth rereading")
+        hits = db_mod.list_articles(query="zzzuniquetoken")["articles"]
+        assert [a["eid"] for a in hits] == ["2-s2.0-n1"]
+
+
+class TestSearchPathsAgree:
+    """FTS and the LIKE fallback must match the same articles.
+
+    They may order differently — FTS ranks by BM25, LIKE by citations — but
+    a query that hits under one path and misses under the other means the
+    answer depends on whether an extension loaded.
+    """
+
+    def test_same_matches_for_a_keywords_only_hit(self, fts_or_skip):
+        # The fallback used to omit `keywords` entirely, so this hit existed
+        # under FTS and vanished without it.
+        db_mod.add_entries([_entry("2-s2.0-k1", "Unrelated title", keywords="electrodialysis")])
+        db_mod.add_entries([_entry("2-s2.0-k2", "Also unrelated")])
+        db_mod.rebuild_fts()
+        fts = {a["eid"] for a in db_mod.search_articles_fts("electrodialysis")["articles"]}
+        like = {a["eid"] for a in db_mod.search_articles_like("electrodialysis")["articles"]}
+        assert fts == like == {"2-s2.0-k1"}
+
+    def test_same_matches_for_a_notes_only_hit(self, fts_or_skip):
+        db_mod.add_entries([_entry("2-s2.0-n2", "Unrelated title")])
+        db_mod.add_entries([_entry("2-s2.0-n3", "Also unrelated")])
+        db_mod.set_note("2-s2.0-n2", "zzzuniquetoken")
+        db_mod.rebuild_fts()
+        fts = {a["eid"] for a in db_mod.search_articles_fts("zzzuniquetoken")["articles"]}
+        like = {a["eid"] for a in db_mod.search_articles_like("zzzuniquetoken")["articles"]}
+        assert fts == like == {"2-s2.0-n2"}

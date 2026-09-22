@@ -147,3 +147,23 @@ def test_lookup_and_fulltext_stamp(client):
     assert body["stamped"] is True
     article = client.get("/articles/2-s2.0-lookup-1").json()
     assert article["fulltext_fetched_at"]
+
+
+def test_article_detail_carries_collection_membership(client):
+    """The detail route is where the GUI reads an article's collections.
+
+    Adding the key to ``get_article`` rather than to a new route means both
+    backends carry it by construction — there is no second implementation to
+    drift.
+    """
+    client.post("/articles", json={"entries": [_entry("2-s2.0-mem-1")]})
+    client.post("/collections", json={"name": "thesis"})
+    client.post("/collections/thesis/articles", json={"eids": ["2-s2.0-mem-1"]})
+
+    article = client.get("/articles/2-s2.0-mem-1").json()
+    assert article["collections"] == ["thesis"]
+
+
+def test_article_not_in_a_collection_reports_empty_membership(client):
+    client.post("/articles", json={"entries": [_entry("2-s2.0-mem-2")]})
+    assert client.get("/articles/2-s2.0-mem-2").json()["collections"] == []

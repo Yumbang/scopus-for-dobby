@@ -308,3 +308,45 @@ class TestAuthValidation:
     def test_valid_inst_token(self):
         from scopus_for_dobby.core.auth import _validate_inst_token
         assert _validate_inst_token("  some-token-123  ") == "some-token-123"
+
+
+class TestCollectionMembership:
+    """The reverse lookup: which collections hold a given article.
+
+    The membership table's primary key leads with ``collection_name``, so it
+    answers "what is in this collection" and nothing answered the reverse —
+    which is what an article's detail view needs.
+    """
+
+    def test_get_article_carries_its_collections(self, tmp_db):
+        db_mod.add_entries([SAMPLE_SEARCH_ENTRY])
+        eid = "2-s2.0-85012345678"
+        db_mod.create_collection("thesis")
+        db_mod.create_collection("to-read")
+        db_mod.add_to_collection("thesis", [eid])
+        db_mod.add_to_collection("to-read", [eid])
+        assert db_mod.get_article(eid)["collections"] == ["thesis", "to-read"]
+
+    def test_an_article_in_no_collection_reports_an_empty_list(self, tmp_db):
+        db_mod.add_entries([SAMPLE_SEARCH_ENTRY])
+        assert db_mod.get_article("2-s2.0-85012345678")["collections"] == []
+
+    def test_lookup_is_grouped_not_per_article(self, tmp_db):
+        db_mod.add_entries([SAMPLE_SEARCH_ENTRY])
+        eid = "2-s2.0-85012345678"
+        db_mod.create_collection("thesis")
+        db_mod.add_to_collection("thesis", [eid])
+        # Absent eids are omitted rather than mapped to [], and one call
+        # serves many articles — a list view must not issue N queries.
+        got = db_mod.collections_for_eids([eid, "2-s2.0-nonexistent"])
+        assert got == {eid: ["thesis"]}
+
+    def test_empty_input_makes_no_query(self, tmp_db):
+        assert db_mod.collections_for_eids([]) == {}
+        assert db_mod.collections_for_eids(["", None]) == {}
+
+    def test_membership_is_indexed_by_eid(self, tmp_db):
+        db_mod.add_entries([SAMPLE_SEARCH_ENTRY])
+        conn = db_mod._get_conn()
+        names = {r[0] for r in conn.execute("SELECT index_name FROM duckdb_indexes()").fetchall()}
+        assert "idx_collection_articles_eid" in names, names

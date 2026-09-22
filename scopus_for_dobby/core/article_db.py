@@ -199,6 +199,12 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             PRIMARY KEY (collection_name, eid)
         )
     """)
+    # The primary key leads with collection_name, which answers "what is in
+    # this collection". The reverse — "which collections hold this article" —
+    # cannot use that as a prefix and would scan the whole membership table.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_collection_articles_eid ON collection_articles(eid)"
+    )
     conn.execute("""
         CREATE TABLE IF NOT EXISTS authors (
             auid            VARCHAR PRIMARY KEY,
@@ -426,7 +432,7 @@ def rebuild_fts() -> dict:
             return {"rebuilt": False, "reason": "empty_corpus"}
         conn.execute(
             "PRAGMA create_fts_index('articles', 'eid', 'title', 'abstract', "
-            "'keywords', overwrite=1)"
+            "'keywords', 'notes', overwrite=1)"
         )
     return {"rebuilt": True, "rows": n}
 
@@ -530,6 +536,16 @@ _ARTICLE_COLUMNS = [
     "openalex_enriched_at",
     "fulltext_fetched_at",
 ]
+
+
+# Every LIKE-based search matches these. The first four are what the FTS
+# index covers, so a query means the same thing whether or not the extension
+# loaded; first_author and journal are additions the fallback can afford
+# because it is scanning anyway. Previously the fallback silently dropped
+# `keywords`, so the two paths returned different result sets.
+_LIKE_SEARCH_COLUMNS = ("title", "abstract", "keywords", "notes", "first_author", "journal")
+
+_LIKE_SEARCH_PREDICATE = " OR ".join(f"LOWER({c}) LIKE ?" for c in _LIKE_SEARCH_COLUMNS)
 
 
 # ── Normalize ────────────────────────────────────────────────────────────────
@@ -953,12 +969,8 @@ def list_articles(
         params.append(f'%"{tag}"%')
 
     if query:
-        where_clauses.append(
-            "(LOWER(title) LIKE ? OR LOWER(first_author) LIKE ? "
-            "OR LOWER(journal) LIKE ? OR LOWER(abstract) LIKE ?)"
-        )
-        q = f"%{query.lower()}%"
-        params.extend([q, q, q, q])
+        where_clauses.append(f"({_LIKE_SEARCH_PREDICATE})")
+        params.extend([f"%{query.lower()}%"] * len(_LIKE_SEARCH_COLUMNS))
 
     where = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -1031,28 +1043,27 @@ def search_articles_fts(query: str, limit: int = 50) -> dict:
 
 
 def search_articles_like(query: str, limit: int = 50) -> dict:
-    """Trigram-style LIKE search over title/abstract/first_author/journal.
+    """LIKE search over title/abstract/keywords/notes/first_author/journal.
 
-    Symmetric replacement for :func:`search_articles_fts` when the FTS
-    extension isn't available. Exposed in core (not Swift) so the GUI
-    holds no search logic of its own (Plan Principle 2).
+    Replacement for :func:`search_articles_fts` when the FTS extension isn't
+    available. It covers every column FTS indexes, so switching paths cannot
+    change which articles match — only their order, since FTS ranks by BM25
+    and this ranks by citations. Exposed in core (not Swift) so the GUI holds
+    no search logic of its own (Plan Principle 2).
     """
     conn = _get_conn()
     q = f"%{query.lower()}%"
-    sql = (
-        "SELECT * FROM articles WHERE "
-        "LOWER(title) LIKE ? OR LOWER(abstract) LIKE ? "
-        "OR LOWER(first_author) LIKE ? OR LOWER(journal) LIKE ? "
-        "ORDER BY cited_by DESC LIMIT ?"
-    )
-    rows = conn.execute(sql, [q, q, q, q, limit]).fetchall()
+    params = [q] * len(_LIKE_SEARCH_COLUMNS)
+    rows = conn.execute(
+        f"SELECT * FROM articles WHERE {_LIKE_SEARCH_PREDICATE} "  # noqa: S608
+        "ORDER BY cited_by DESC LIMIT ?",
+        [*params, limit],
+    ).fetchall()
     columns = [desc[0] for desc in conn.description]
     articles = [_row_to_dict(row, columns) for row in rows]
     total = conn.execute(
-        "SELECT COUNT(*) FROM articles WHERE "
-        "LOWER(title) LIKE ? OR LOWER(abstract) LIKE ? "
-        "OR LOWER(first_author) LIKE ? OR LOWER(journal) LIKE ?",
-        [q, q, q, q],
+        f"SELECT COUNT(*) FROM articles WHERE {_LIKE_SEARCH_PREDICATE}",  # noqa: S608
+        params,
     ).fetchone()[0]
     return {"articles": articles, "total": total}
 
@@ -1154,14 +1165,47 @@ def enrich_articles(enrichments: list[dict]) -> dict:
     return {"enriched": enriched, "skipped": skipped}
 
 
+def collections_for_eids(eids: list[str]) -> dict[str, list[str]]:
+    """Which collections hold each of these articles.
+
+    One grouped query, not one per article: a list view asking per row would
+    be N scans. Articles in no collection are absent from the result rather
+    than present with an empty list — callers use ``.get(eid, [])``.
+    """
+    eids = [e for e in eids if e]
+    if not eids:
+        return {}
+    placeholders = ",".join("?" * len(eids))
+    rows = (
+        _get_conn()
+        .execute(
+            "SELECT eid, collection_name FROM collection_articles "  # noqa: S608
+            f"WHERE eid IN ({placeholders}) ORDER BY collection_name",
+            eids,
+        )
+        .fetchall()
+    )
+    out: dict[str, list[str]] = {}
+    for eid, name in rows:
+        out.setdefault(eid, []).append(name)
+    return out
+
+
 def get_article(eid: str) -> dict:
-    """Get a single article by EID."""
+    """Get a single article by EID, with its collection membership.
+
+    ``collections`` is carried here and not on list rows: the detail pane is
+    the only place that needs it, and adding a join to every listed row would
+    cost far more than it buys.
+    """
     conn = _get_conn()
     row = conn.execute("SELECT * FROM articles WHERE eid = ?", [eid]).fetchone()
     if not row:
         raise ValueError(f"Article not found: {eid}")
     columns = [desc[0] for desc in conn.description]
-    return _row_to_dict(row, columns)
+    article = _row_to_dict(row, columns)
+    article["collections"] = collections_for_eids([eid]).get(eid, [])
+    return article
 
 
 def lookup_article(identifier: str) -> dict | None:
