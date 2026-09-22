@@ -135,8 +135,8 @@ def register(cli):
             import uvicorn
         except ImportError:
             click.echo(
-                "The daemon requires the optional [gui] extra.\n"
-                "Install it with: uv pip install -e '.[cli,export,gui]'",
+                "Starting a daemon requires the optional [gui] extra.\n"
+                "Install it with: uv pip install -e '.[gui]'",
                 err=True,
             )
             sys.exit(1)

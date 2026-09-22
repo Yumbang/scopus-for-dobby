@@ -8,8 +8,10 @@ on its own. See ``_client`` for the selection rule.
 Function names and return shapes mirror :mod:`scopus_for_dobby.core.article_db`
 exactly, so the router can hand either module to subcommand code.
 
-``httpx`` is imported lazily: it ships in the optional ``[gui]`` extra
-alongside the daemon itself, and a CLI-only install must not import it.
+``httpx`` is a core dependency: the daemon *server* is optional, but any
+install may have to talk to a daemon someone else started, so the client
+half cannot be. The import stays at call time only to keep it off the
+startup path of commands that never reach this backend.
 """
 
 from __future__ import annotations
@@ -34,13 +36,7 @@ def _client():
     if _client_factory is not None:
         return _client_factory()
 
-    try:
-        import httpx
-    except ImportError as e:  # pragma: no cover — only on a CLI-only install
-        raise DaemonUnavailableError(
-            "A daemon is running but the HTTP client is not installed. "
-            "Install the daemon extra: uv pip install -e '.[gui]'"
-        ) from e
+    import httpx
 
     base_url = daemon_endpoint()
     if not base_url:  # pragma: no cover — router checks this first

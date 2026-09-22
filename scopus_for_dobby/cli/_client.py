@@ -13,11 +13,12 @@ This module picks one of two backends, once per process:
   file, so when the daemon holds the file we must go through it.
 
 Amends ADR-7: the CLI no longer lazy-spawns a daemon on every invocation.
-The daemon is a GUI/concurrency feature, shipped in the optional ``[gui]``
-extra along with ``fastapi``/``uvicorn``/``httpx``. A CLI-only install has
-none of them and never needs them — but it still detects and attaches to a
-daemon if one happens to be up, which is exactly the case where the extra
-is installed. The spawn machinery in ``_daemon.py`` is retained for tests
+The daemon *server* is a GUI/concurrency feature, shipped in the optional
+``[gui]`` extra along with ``fastapi``/``uvicorn``. A CLI-only install cannot
+start one — but it can still detect and attach to a daemon someone else
+started, because the HTTP client (``httpx``) is a core dependency. That case
+is not hypothetical: starting the macOS GUI puts every CLI invocation on that
+machine onto the HTTP path. The spawn machinery in ``_daemon.py`` is retained for tests
 and for anything that wants to start a daemon programmatically; nothing on
 the default CLI path calls it.
 

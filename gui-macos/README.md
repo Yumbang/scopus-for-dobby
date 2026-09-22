@@ -18,7 +18,7 @@ The `.xcodeproj` is gitignored — regenerate after editing `project.yml`.
 ## Run requirements
 
 The Python side must be installed **with the `gui` extra**, which is what
-provides the daemon (`fastapi`, `uvicorn`, `httpx`):
+provides the daemon server (`fastapi`, `uvicorn`):
 
 ```bash
 uv tool install --reinstall --editable ".[gui]"

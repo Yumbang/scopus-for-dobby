@@ -33,7 +33,7 @@ After code changes, always reinstall the CLI tool before testing:
 uv tool install --reinstall --editable .
 ```
 
-Extras: `gui` is the only meaningful one (the HTTP daemon — `fastapi`, `uvicorn`, `httpx`). `cli` and `export` are empty backwards-compat aliases; their contents are core dependencies. Never reintroduce a dep the CLI needs at import time as an extra.
+Extras: `gui` is the only meaningful one (the HTTP daemon *server* — `fastapi`, `uvicorn`). `cli` and `export` are empty backwards-compat aliases; their contents are core dependencies. `httpx` is core too: the server is optional, but any install may have to talk to a daemon someone else started, and starting the macOS GUI puts every CLI invocation on that machine onto the HTTP path. Never reintroduce a dep the CLI needs at import time as an extra.
 
 ## Python version
 
@@ -87,4 +87,4 @@ Subcommands never import `core/article_db` directly — they go through `cli/_cl
 - **in-process** (default) — `core/article_db` opened directly. No daemon, no HTTP.
 - **daemon** (`cli/_http.py`) — chosen only when `~/.scopus-for-dobby/daemon.{pid,port}` point at a live process, because DuckDB allows a single read/write process per file and the daemon holds it.
 
-The daemon stack (`fastapi`, `uvicorn`, `httpx`) lives in the optional `[gui]` extra. This amends ADR-7, which had every CLI invocation lazy-spawn a daemon. Any function reachable via `db_mod.<name>` must be listed in `_client._API` and implemented by **both** backends.
+The daemon *server* (`fastapi`, `uvicorn`) lives in the optional `[gui]` extra; the client (`httpx`) is core, so a bare install can attach to a daemon it cannot itself start. This amends ADR-7, which had every CLI invocation lazy-spawn a daemon. Any function reachable via `db_mod.<name>` must be listed in `_client._API` and implemented by **both** backends.

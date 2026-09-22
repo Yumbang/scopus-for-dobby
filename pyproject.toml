@@ -30,18 +30,23 @@ dependencies = [
     "click>=8.0.0",
     "prompt-toolkit>=3.0.0",
     "openpyxl>=3.1.0",
+    # The HTTP *client*. The daemon itself stays optional, but whether the CLI
+    # needs a client is not the CLI's choice: start the GUI and every command
+    # on that machine routes over HTTP. Leaving it in [gui] meant running the
+    # GUI silently conscripted the CLI into the extra. ~300 KB across four
+    # wheels; certifi and idna already arrive with requests.
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
-# The HTTP daemon (`scopus-for-dobby serve`) and everything that speaks to
-# it. Required by the macOS GUI, and by anyone who wants two processes on
-# the database at once. The CLI runs against DuckDB in-process without it
-# — see the module docstring in `cli/_client.py`. This is the only extra
-# that changes what you get.
+# The HTTP daemon *server* (`scopus-for-dobby serve`). Required by the macOS
+# GUI, and by anyone who wants two processes on the database at once. The CLI
+# runs against DuckDB in-process without it — see the module docstring in
+# `cli/_client.py`. The client half (`httpx`) is a core dependency: a bare
+# install must be able to talk to a daemon someone else started.
 gui = [
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
-    "httpx>=0.27.0",
 ]
 # Community detection over citation-graph projections. Everything else
 # `openalex analyze` reports is stdlib set arithmetic and needs nothing here.
@@ -58,11 +63,10 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.4.0",
-    # The test suite covers both DB backends, so it needs the daemon stack.
-    # `fastapi.testclient` requires httpx.
+    # The test suite covers both DB backends, so it needs the daemon server.
+    # (`fastapi.testclient` also needs httpx, which is a core dependency now.)
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
-    "httpx>=0.27.0",
     # ...and the analysis extra, so community detection is actually exercised.
     "networkx>=3.4",
 ]

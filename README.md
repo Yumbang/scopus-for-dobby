@@ -16,9 +16,10 @@ uv tool install --editable .
 uv tool install --editable ".[gui]"
 ```
 
-`gui` is the only extra that changes what you get: it pulls in `fastapi`,
-`uvicorn`, and `httpx`. Without it the CLI talks to DuckDB in-process — fewer
-dependencies, faster startup, no background process left running. See
+`gui` is the only extra that changes what you get: it pulls in `fastapi` and
+`uvicorn`, the daemon *server*. Without it the CLI talks to DuckDB in-process —
+faster startup, no background process left running — but it can still attach to
+a daemon started elsewhere, because the HTTP client is a core dependency. See
 [Daemon](#serve--http-daemon) below.
 
 > The old `[cli]` and `[export]` extras are now empty aliases — their contents

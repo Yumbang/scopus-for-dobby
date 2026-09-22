@@ -9,8 +9,9 @@ prevents two concurrent callers from both spawning a daemon.
 lazy-spawn a daemon; that was amended (see ``cli/_client.py``) so the CLI
 runs in-process and only attaches to a daemon someone else started. This
 module is what "someone else" uses — the macOS GUI shells out to
-``serve --background`` directly, and tests drive these helpers. Requires the
-optional ``[gui]`` extra for ``httpx``.
+``serve --background`` directly, and tests drive these helpers. Spawning a
+daemon needs the optional ``[gui]`` extra for ``uvicorn``; the health probe
+does not, since ``httpx`` is a core dependency.
 """
 
 from __future__ import annotations
@@ -63,8 +64,8 @@ def _port_free(port: int) -> bool:
 
 
 def _wait_for_health(base_url: str, deadline: float) -> bool:
-    # httpx ships in the optional [gui] extra — import at call time so a
-    # CLI-only install can still import this module.
+    # Imported at call time to keep httpx off the startup path of every
+    # command that never probes a daemon.
     import httpx
 
     while time.monotonic() < deadline:

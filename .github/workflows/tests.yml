@@ -67,7 +67,7 @@ jobs:
         run: |
           uv run python - <<'PY'
           import importlib.util as u, sys
-          leaked = [m for m in ("fastapi", "uvicorn", "httpx", "starlette", "networkx")
+          leaked = [m for m in ("fastapi", "uvicorn", "starlette", "networkx")
                     if u.find_spec(m) is not None]
           if leaked:
               sys.exit(f"optional deps leaked into a bare install: {leaked}")
@@ -121,15 +121,14 @@ jobs:
           PY
 
   bare-vs-daemon:
-    # httpx ships only in [gui]. With a daemon already up, every db_mod call
-    # goes through cli/_http.py, whose lazy `import httpx` becomes
-    # DaemonUnavailableError. That is deliberate (see _http.py). The python
-    # job never reaches the import — conftest installs _client_factory first —
-    # and cli-only asserts that no daemon exists. This job is the missing
-    # combination: a real `serve` process, and a bare client talking to it.
-    # It pins today's contract. A later change that imports httpx at module
-    # top (traceback) or moves httpx into core (the command starts working)
-    # fails here on purpose.
+    # httpx is a core dependency; the daemon *server* (fastapi/uvicorn) is not.
+    # So a bare install cannot start a daemon but must be able to drive one
+    # someone else started — which is what happens the moment the macOS GUI
+    # runs. Nothing else covers that combination: the python job routes through
+    # a TestClient and never opens a socket, and cli-only asserts that no
+    # daemon exists. This job is the real thing — a `serve` process from a
+    # [gui] environment, and a bare client talking to it over TCP.
+    # It fails if httpx ever drifts back into an extra.
     name: Bare CLI against a live daemon
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -152,7 +151,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/bare/bin/python" - <<'PY'
           import importlib.util as u, sys
-          leaked = [m for m in ("fastapi", "uvicorn", "httpx", "starlette", "networkx")
+          leaked = [m for m in ("fastapi", "uvicorn", "starlette", "networkx")
                     if u.find_spec(m) is not None]
           if leaked:
               sys.exit(f"optional deps leaked into a bare install: {leaked}")
@@ -194,18 +193,16 @@ jobs:
             sleep 0.5
           done
           test "$ready" -eq 1
-          set +e
-          out="$("$BARE" --json db list 2>&1)"
-          code=$?
-          set -e
+          # stdout only: a stray stderr line would corrupt the JSON parse.
+          out="$("$BARE" --json db list)"
           printf '%s\n' "$out"
-          test "$code" -eq 1
           "$RUNNER_TEMP/bare/bin/python" -c '
           import json, sys
           data = json.loads(sys.stdin.read())
-          assert data["type"] == "DaemonUnavailableError", data
-          assert "HTTP client is not installed" in data["error"], data
-          assert "[gui]" in data["error"], data
+          assert "error" not in data, data
+          assert "articles" in data, data
+          assert "total_in_db" in data, data
+          print("bare client drove the daemon over HTTP")
           ' <<<"$out"
           # Commands that never touch db_mod keep working.
           "$BARE" skill list

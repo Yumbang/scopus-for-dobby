@@ -11,8 +11,10 @@ The exception: if an HTTP daemon is already listening (someone ran
 required, not optional — DuckDB allows a single read/write process per file, and
 the daemon holds it.
 
-The daemon ships in the optional `[gui]` extra (`fastapi`, `uvicorn`, `httpx`).
-A plain install has none of it and never needs it.
+The daemon *server* ships in the optional `[gui]` extra (`fastapi`, `uvicorn`).
+A plain install cannot start one and rarely needs to — but it will use one
+automatically if a daemon is already up (the macOS GUI starts one), because the
+HTTP client is a core dependency.
 
 State files under `~/.scopus-for-dobby/`:
 
