@@ -120,6 +120,97 @@ jobs:
           print("analyze works without networkx")
           PY
 
+  bare-vs-daemon:
+    # httpx ships only in [gui]. With a daemon already up, every db_mod call
+    # goes through cli/_http.py, whose lazy `import httpx` becomes
+    # DaemonUnavailableError. That is deliberate (see _http.py). The python
+    # job never reaches the import — conftest installs _client_factory first —
+    # and cli-only asserts that no daemon exists. This job is the missing
+    # combination: a real `serve` process, and a bare client talking to it.
+    # It pins today's contract. A later change that imports httpx at module
+    # top (traceback) or moves httpx into core (the command starts working)
+    # fails here on purpose.
+    name: Bare CLI against a live daemon
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install a [gui] environment and a bare one
+        run: |
+          uv venv "$RUNNER_TEMP/gui"
+          uv pip install --python "$RUNNER_TEMP/gui/bin/python" -e ".[gui]"
+          uv venv "$RUNNER_TEMP/bare"
+          uv pip install --python "$RUNNER_TEMP/bare/bin/python" -e .
+
+      - name: Assert the bare environment has no optional stacks
+        run: |
+          "$RUNNER_TEMP/bare/bin/python" - <<'PY'
+          import importlib.util as u, sys
+          leaked = [m for m in ("fastapi", "uvicorn", "httpx", "starlette", "networkx")
+                    if u.find_spec(m) is not None]
+          if leaked:
+              sys.exit(f"optional deps leaked into a bare install: {leaked}")
+          print("clean: no daemon or analysis stack installed")
+          PY
+
+      - name: Bare client against a real daemon
+        run: |
+          set -euo pipefail
+          GUI="$RUNNER_TEMP/gui/bin/scopus-for-dobby"
+          BARE="$RUNNER_TEMP/bare/bin/scopus-for-dobby"
+          # `serve --background` does not detach; the flag only picks the
+          # idle watchdog and the log file. The shell backgrounds it.
+          cleanup() {
+            local pidfile="$HOME/.scopus-for-dobby/daemon.pid"
+            local pid=""
+            if [ -f "$pidfile" ]; then
+              pid="$(cat "$pidfile" 2>/dev/null || true)"
+            fi
+            if [ -n "$pid" ]; then
+              kill "$pid" 2>/dev/null || true
+              for _ in 1 2 3 4 5 6 7 8 9 10; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.2
+              done
+            fi
+          }
+          trap cleanup EXIT
+          "$GUI" serve --background --port 8765 &
+          ready=0
+          for _ in $(seq 1 60); do
+            if [ -f "$HOME/.scopus-for-dobby/daemon.port" ]; then
+              port="$(cat "$HOME/.scopus-for-dobby/daemon.port")"
+              if curl -sf "http://127.0.0.1:${port}/health" >/dev/null; then
+                ready=1
+                break
+              fi
+            fi
+            sleep 0.5
+          done
+          test "$ready" -eq 1
+          set +e
+          out="$("$BARE" --json db list 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$out"
+          test "$code" -eq 1
+          "$RUNNER_TEMP/bare/bin/python" -c '
+          import json, sys
+          data = json.loads(sys.stdin.read())
+          assert data["type"] == "DaemonUnavailableError", data
+          assert "HTTP client is not installed" in data["error"], data
+          assert "[gui]" in data["error"], data
+          ' <<<"$out"
+          # Commands that never touch db_mod keep working.
+          "$BARE" skill list
+          "$BARE" auth status
+
   skill-packaging:
     # `skill install` reads files shipped as package-data. A missing glob in
     # pyproject still passes the test suite (which runs from the source tree)

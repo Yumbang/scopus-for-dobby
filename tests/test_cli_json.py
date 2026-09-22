@@ -8,6 +8,7 @@ from click.testing import CliRunner
 from scopus_for_dobby.cli import cli as root_cli
 from scopus_for_dobby.cli._state import state
 from scopus_for_dobby.core import article_db as db_mod
+from scopus_for_dobby.core import session as session_mod
 
 SAMPLE = {
     "dc:title": "JSON CLI sample",
@@ -22,12 +23,24 @@ SAMPLE = {
     "prism:aggregationType": "Journal",
 }
 
+SAMPLE_2 = {
+    **SAMPLE,
+    "dc:title": "JSON CLI sample 2",
+    "prism:doi": "10.0/cli-2",
+    "eid": "2-s2.0-cli-2",
+    "dc:identifier": "SCOPUS_ID:cli-2",
+}
+
 
 @pytest.fixture
 def tmp_db(monkeypatch, tmp_path):
     db_file = tmp_path / "articles.duckdb"
     monkeypatch.setattr(db_mod, "DB_PATH", db_file)
     monkeypatch.setattr(db_mod, "CONFIG_DIR", tmp_path)
+    # Export reads the working collection from the session. Keep that off the
+    # real ~/.scopus-for-dobby/session, and drop any Session cached earlier.
+    monkeypatch.setattr(session_mod, "SESSION_DIR", tmp_path / "session")
+    monkeypatch.setattr(session_mod, "_session", None)
     # Reset shared mutable state between tests.
     state.json_output = False
     state.repl_mode = False
@@ -130,3 +143,95 @@ class TestEidsFromStdin:
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["tagged"] == 1
+
+
+class TestExportJson:
+    def test_json_success_and_counts(self, tmp_db, runner, tmp_path):
+        db_mod.add_entries([SAMPLE])
+        out = tmp_path / "refs.bib"
+        result = runner.invoke(root_cli, ["--json", "export", "--format", "bibtex", "-o", str(out)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["exported"] == 1
+        assert data["format"] == "bibtex"
+        assert data["output"] == str(out)
+        assert data["total_matching"] == 1
+        assert data["total_in_db"] == 1
+        assert "tier" not in data
+        assert "truncated" not in data
+        assert out.read_text(encoding="utf-8").count("@") == 1
+
+    def test_json_xlsx_includes_tier(self, tmp_db, runner, tmp_path):
+        db_mod.add_entries([SAMPLE])
+        out = tmp_path / "papers.xlsx"
+        result = runner.invoke(root_cli, ["--json", "export", "--format", "xlsx", "-o", str(out)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["format"] == "xlsx"
+        assert data["tier"] in {"free-tier", "institutional"}
+        assert out.exists()
+
+    def test_json_empty_library(self, tmp_db, runner, tmp_path):
+        out = tmp_path / "empty.ris"
+        result = runner.invoke(root_cli, ["--json", "export", "--format", "ris", "-o", str(out)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data == {
+            "exported": 0,
+            "format": "ris",
+            "output": None,
+            "reason": "no articles",
+        }
+        assert not out.exists()
+
+    def test_json_no_search_results(self, tmp_db, runner, tmp_path):
+        result = runner.invoke(
+            root_cli,
+            ["--json", "export", "--from-last-search", "--format", "bibtex", "-o", "x.bib"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["exported"] == 0
+        assert data["reason"] == "no search results"
+
+    def test_json_hides_working_collection_note(self, tmp_db, runner, tmp_path):
+        db_mod.add_entries([SAMPLE])
+        db_mod.create_collection("thesis")
+        db_mod.add_to_collection("thesis", [SAMPLE["eid"]])
+        session_mod.get_session().working_collection = "thesis"
+        out = tmp_path / "refs.bib"
+        result = runner.invoke(root_cli, ["--json", "export", "--format", "bibtex", "-o", str(out)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["exported"] == 1
+        assert "Using working collection" not in result.output
+
+    def test_human_success_stays_human(self, tmp_db, runner, tmp_path):
+        db_mod.add_entries([SAMPLE])
+        out = tmp_path / "refs.bib"
+        result = runner.invoke(root_cli, ["export", "--format", "bibtex", "-o", str(out)])
+        assert result.exit_code == 0, result.output
+        assert f"Exported 1 articles to {out}" in result.output
+        assert "of 2 matching" not in result.output
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(result.output)
+
+    def test_truncation_is_disclosed(self, tmp_db, runner, tmp_path, monkeypatch):
+        monkeypatch.setattr("scopus_for_dobby.cli.export._ALL", 1)
+        db_mod.add_entries([SAMPLE, SAMPLE_2])
+        out = tmp_path / "refs.bib"
+        human = runner.invoke(root_cli, ["export", "--format", "bibtex", "-o", str(out)])
+        assert human.exit_code == 0, human.output
+        assert "Exported 1 of 2 matching (2 total in DB)" in human.output
+        assert out.read_text(encoding="utf-8").count("@") == 1
+
+        out_json = tmp_path / "refs-json.bib"
+        result = runner.invoke(
+            root_cli, ["--json", "export", "--format", "bibtex", "-o", str(out_json)]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["exported"] == 1
+        assert data["total_matching"] == 2
+        assert data["total_in_db"] == 2
+        assert data["truncated"] is True

@@ -62,7 +62,7 @@ scopus-for-dobby search "deep learning" --limit 20   # or direct subcommands
 | `collection list / create / add / remove / delete / merge / rename` | Group articles (tags stay independent) |
 | `collection set / unset / current` | **Working collection** — becomes the default for `db add` and `export` |
 | `author list / info / coauthors / fetch / note` | Author DB (auto-extracted); `fetch` pulls h-index/ORCID from Scopus |
-| `export --format xlsx\|bibtex\|ris [-o] [-t] [-c] [--from-last-search]` | Bibliography export |
+| `export --format xlsx\|bibtex\|ris [-o] [-t] [-c] [--from-last-search]` | Bibliography export, up to 100,000 rows; `--json` is one object on success |
 | `openalex enrich / graph / analyze / key / email` | OA PDF links, citation counts, topics; citation-graph files; `analyze` interprets a graph (**citation-analysis** skill). Free, but metered per IP — set `openalex key` first |
 | `serve [--port] [--idle-timeout]` | Start the HTTP daemon (needs the `[gui]` extra). Only needed for the macOS GUI, or to run two clients at once — see `references/troubleshooting.md` |
 

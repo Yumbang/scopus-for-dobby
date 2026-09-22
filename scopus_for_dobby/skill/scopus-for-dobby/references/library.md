@@ -96,6 +96,8 @@ export --from-last-search --format ris     # export search results directly
 - Keywords are normalized per format: one `KW` line each in RIS, comma-joined in BibTeX, `"; "`-joined in the XLSX cell.
 - With a working collection set and no `--collection`/`--from-last-search`, export defaults to the working collection; a `--tag` filter applies *on top of* it, not instead of it.
 - `--from-last-search` exports the raw last-search results and ignores `--collection`, `--tag`, and the working collection. To export a filtered subset, save to the DB first, then export by `--collection`/`--tag`.
+- A database export reads at most 100,000 matching rows (the same ceiling as `profile`, `fulltext`, and `openalex`). Past that, the file is still written and the command says `Exported N of M matching (K total in DB)` — the same shape as `db list`, with the verb the action actually performed.
+- `--json export` prints one object. Success keys: `exported`, `format`, `output`, `tier` (xlsx only), and for a database export `total_matching` and `total_in_db`. `truncated` appears only when the ceiling cut the file short. An empty library is `{"exported": 0, "format": "...", "output": null, "reason": "no articles"}`; an empty `--from-last-search` uses `"reason": "no search results"`.
 
 ## Scripting with --json
 
