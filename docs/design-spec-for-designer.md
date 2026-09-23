@@ -115,11 +115,10 @@ The skeleton ships with a `NavigationSplitView` three-pane layout. Below is what
 ### 4.2 Sidebar (left pane, ~220pt min width)
 **Currently:**
 - Section "Library" → "All articles" row (icon: `tray.full`), counting the whole library.
-- Section "Collections" (header shows the collection count and a `+` menu: *New collection…* / *New project…*) →
-  - one row per project (icon: `rectangle.stack`), with its distinct-article count and a chevron that expands it to show its member collections indented beneath it; an expanded empty project shows "No collections — choose…"
-  - then one row per ungrouped collection (icon: `folder`) with its count
+- Section "Projects" (header shows the project count and a `+` menu: *New collection…* / *New project…*; right-clicking the header offers the same) → one row per project (icon: `rectangle.stack`), with its distinct-article count and a chevron that expands it to show its member collections indented beneath it; an expanded empty project shows "No collections — choose…". With no projects, a muted "No projects — create one…" row.
+- Section "Collections" — titled "Ungrouped collections" once any project exists — with the same header controls, one row per collection filed under no project (icon: `folder`) with its count.
 - A row with a zero count has a muted label, so empty collections and projects read differently from populated ones.
-- Project context menu: *Choose collections…* (a checkbox sheet for bulk filing — checking a collection filed elsewhere moves it), *New collection in project…*, *Rename…* (inline), *Delete…* (confirmation dialog; the collections are kept, ungrouped).
+- Project context menu: *Choose collections…* (a checkbox sheet for bulk filing — checking a collection filed elsewhere moves it), *Rename…* (inline), *New collection in project…*, *New project…*, *Delete…* (confirmation dialog; the collections are kept, ungrouped).
 - Collection context menu: *Rename…* (inline), *Merge into…* (sheet), *Move to project* submenu (ending in *New project…*), *Remove from "project"* when filed, *Delete*.
 - Footer: daemon status dot, port, and app/CLI version line.
 

@@ -21,6 +21,7 @@ struct CollectionsSidebar: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     librarySection
+                    projectsSection
                     collectionsSection
                 }
                 .padding(.horizontal, 8)
@@ -130,28 +131,24 @@ struct CollectionsSidebar: View {
         }
     }
 
-    /// Projects first, each a disclosure over its members, then the
-    /// ungrouped collections. With no projects this is the flat list it
-    /// always was — there is no separate "Projects" header to sit empty.
-    private var collectionsSection: some View {
+    /// Projects, each a disclosure over its member collections. The header
+    /// always shows, so there is a visible place to create the first one.
+    private var projectsSection: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text("Collections")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .tracking(1.0)
-                    .textCase(.uppercase)
-                    .foregroundStyle(Theme.inkMute)
-                Text("\(state.collections.count)")
-                    .font(.system(size: 10))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.inkMute.opacity(0.7))
-                Spacer()
-                addMenu
+            sectionHeader("Projects", count: state.projects.count)
+            if state.projects.isEmpty {
+                Button { presentLater { projectSheet = ProjectSheetContext(mode: .create, initiallyChecked: []) } } label: {
+                    Text("No projects — create one…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.inkMute)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 4)
-            .padding(.bottom, 6)
-
             ForEach(state.projects) { p in
                 projectRow(p)
                 if isExpanded(p.name) {
@@ -163,10 +160,64 @@ struct CollectionsSidebar: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Collections filed under no project. Grouped ones live under their
+    /// project above, so the count here is the ungrouped ones only.
+    private var collectionsSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            sectionHeader(state.projects.isEmpty ? "Collections" : "Ungrouped collections",
+                          count: state.ungroupedCollections.count)
             ForEach(state.ungroupedCollections) { c in
                 collectionRow(c)
             }
         }
+    }
+
+    private func sectionHeader(_ title: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 10.5, weight: .semibold))
+                .tracking(1.0)
+                .textCase(.uppercase)
+                .foregroundStyle(Theme.inkMute)
+                .lineLimit(1)
+            Text("\(count)")
+                .font(.system(size: 10))
+                .monospacedDigit()
+                .foregroundStyle(Theme.inkMute.opacity(0.7))
+            Spacer()
+            addMenu
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
+        .contentShape(Rectangle())
+        .contextMenu { newItems(checking: []) }
+    }
+
+    /// "New collection…" / "New project…", shared by the + menu and every
+    /// context menu that offers them. ``checking`` pre-checks collections in
+    /// the new-project sheet.
+    @ViewBuilder
+    private func newItems(checking: Set<String>, inProject project: String? = nil) -> some View {
+        Button(project == nil ? "New collection…" : "New collection in project…") {
+            presentLater { newCollection = NewCollectionContext(project: project) }
+        }
+        Button("New project…") {
+            presentLater {
+                projectSheet = ProjectSheetContext(mode: .create, initiallyChecked: checking)
+            }
+        }
+    }
+
+    /// Present a sheet on the next runloop turn. A context-menu action runs
+    /// while AppKit is still tearing the menu down, and a sheet requested in
+    /// that window can be silently dropped — the item looks dead. The + menu
+    /// happened not to hit it; right-click did.
+    private func presentLater(_ change: @escaping () -> Void) {
+        DispatchQueue.main.async(execute: change)
     }
 
     /// Lines a member's icon up under its project's name: icon width + spacing.
@@ -174,10 +225,7 @@ struct CollectionsSidebar: View {
 
     private var addMenu: some View {
         Menu {
-            Button("New collection…") { newCollection = NewCollectionContext(project: nil) }
-            Button("New project…") {
-                projectSheet = ProjectSheetContext(mode: .create, initiallyChecked: [])
-            }
+            newItems(checking: [])
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 11, weight: .medium))
@@ -217,14 +265,13 @@ struct CollectionsSidebar: View {
             }
             .help("\(p.collectionCount) collection\(p.collectionCount == 1 ? "" : "s") · \(p.articleCount) distinct articles")
             .contextMenu {
-                Button("Choose collections…") { chooseCollections(for: p.name) }
-                Button("New collection in project…") {
-                    newCollection = NewCollectionContext(project: p.name)
-                }
+                Button("Choose collections…") { presentLater { chooseCollections(for: p.name) } }
                 Button("Rename…") { startRename(.project(p.name), draft: p.name) }
                 Divider()
+                newItems(checking: [], inProject: p.name)
+                Divider()
                 Button("Delete \"\(p.name)\"…", role: .destructive) {
-                    deletingProject = p.name
+                    presentLater { deletingProject = p.name }
                 }
             }
         }
@@ -266,7 +313,7 @@ struct CollectionsSidebar: View {
             }
             .contextMenu {
                 Button("Rename…") { startRename(.collection(c.name), draft: c.name) }
-                Button("Merge into…") { mergingCollection = c.name }
+                Button("Merge into…") { presentLater { mergingCollection = c.name } }
                     .disabled(state.collections.count < 2)
                 moveToProjectMenu(c)
                 if let p = c.project {
@@ -301,7 +348,9 @@ struct CollectionsSidebar: View {
             // name and pressing Return is the whole "new project" prompt,
             // and the list is there if more belong with it.
             Button("New project…") {
-                projectSheet = ProjectSheetContext(mode: .create, initiallyChecked: [c.name])
+                presentLater {
+                    projectSheet = ProjectSheetContext(mode: .create, initiallyChecked: [c.name])
+                }
             }
         }
     }
