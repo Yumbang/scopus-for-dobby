@@ -3,7 +3,7 @@
 ## How expansion works
 
 ```
-depth 0   your seeds (--collection / --tag / EIDs)
+depth 0   your seeds (--collection / --project / --tag / EIDs)
 depth 1   every seed expanded: references + citers    (--direction)
 depth 2   expand a node only if reached_by >= --min-reached
 depth 3   same gate again

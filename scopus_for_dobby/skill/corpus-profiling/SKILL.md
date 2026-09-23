@@ -29,6 +29,7 @@ If any answer is no, use the plain command and read the output.
 ```bash
 scopus-for-dobby profile --collection review          # topic/keyword profile
 scopus-for-dobby profile --tag survey --top 30
+scopus-for-dobby profile -p r1                       # a whole project's collections
 scopus-for-dobby profile -c review --terms            # title terms + bigrams
 scopus-for-dobby profile -c review --co-occurrence    # which labels co-occur
 scopus-for-dobby --json profile -c review             # structured (global --json)
@@ -42,7 +43,11 @@ scopus-for-dobby --json profile -c review             # structured (global --jso
 | `--co-occurrence` | Label pairs appearing on the same paper |
 
 Seeds come from `--collection`, `--tag`, or positional EIDs, like the rest of
-the CLI.
+the CLI — or a whole project's collections at once with `-p/--project`, which is
+the answer to "what is my r1 project about" (`profile -p r1`). The papers are
+deduplicated across collections, `-p` excludes `-c`, and the scope line reads
+`Articles: N (project 'r1')` (`scope.project` under `--json`). Projects are
+managed with `project ...` (scopus-for-dobby skill).
 
 ## Coverage is the whole story — read it first
 
@@ -64,7 +69,7 @@ corpus. `profile` prints coverage above every table and warns below 50%; quote
 that warning to the user rather than presenting the profile bare.
 
 Two ways to fix low coverage, in order:
-1. `openalex enrich --collection X` — free, keyless, populates `openalex_topics`.
+1. `openalex enrich --collection X` (or `--project P`) — free, keyless, populates `openalex_topics`.
 2. Fall back to `--terms` (titles are always there), and say that is what you did.
 
 `share` is the share of **articles carrying that field**, not of the corpus.

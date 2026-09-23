@@ -69,7 +69,9 @@ scopus-for-dobby openalex graph --collection review --depth 2 -o map.graphml
 ```
 
 Seeds come from `--collection`, `--tag`, or positional EIDs — any batch of
-saved papers. Seeds need DOIs; those without one are reported, not fatal.
+saved papers — or from a whole project's collections at once with `-p/--project`
+(deduplicated; excludes `--collection`). Projects are managed with `project ...`
+(scopus-for-dobby skill). Seeds need DOIs; those without one are reported, not fatal.
 
 `openalex enrich` is **not** a prerequisite. `analyze` matches seeds to OpenAlex
 by DOI itself. Enriching first is still worth it for open-access links and topic

@@ -32,6 +32,7 @@ Matches saved articles to OpenAlex **by DOI** and writes back onto the article r
 ```bash
 openalex enrich                       # whole DB; skips already-enriched articles
 openalex enrich --collection thesis   # scope by collection
+openalex enrich --project thesis      # ...or by every collection in a project
 openalex enrich --tag ml --force      # --force re-enriches even if already done
 openalex enrich -n 50                 # cap the batch
 ```
@@ -59,6 +60,7 @@ Builds a graph around seed articles and writes it to a **file** — graphs are n
 
 ```bash
 openalex graph --collection thesis -o thesis.graphml      # seed = a collection
+openalex graph --project thesis -o thesis.graphml         # seed = a project's collections
 openalex graph --tag survey -d references -o refs.json    # seed = a tag
 openalex graph 2-s2.0-85012345678 -d cited-by -f csv -o cites.csv   # seed = EIDs
 ```
@@ -66,6 +68,7 @@ openalex graph 2-s2.0-85012345678 -d cited-by -f csv -o cites.csv   # seed = EID
 - **Directions** (`-d`, default `references`): `references` = what the seeds cite (backward, batched 50/request — cheap); `cited-by` = what cites the seeds (forward; Scopus charges extra for this, OpenAlex does not — but it costs **one request per seed**); `both` = each of the above. The default is `references` because on 273 seeds `both` spends 273 requests before resolving a single reference.
 - **Semantics**: directed edge A → B means "A cites B". Seed nodes carry `is_seed=true`; node attributes: `label` (title), `year`, `doi`, `cited_by_count`.
 - **`--per-seed-limit N`** (default 200) caps references/citers fetched per seed. The default suits small seed sets; for 100+ seeds lower it (30–50) and/or use `-d references`, otherwise the graph file grows too large to open comfortably in Gephi.
+- `--project` takes the deduplicated union of the project's collections and excludes `--collection`; an unknown project is an error, not an empty seed set.
 - Seeds need DOIs; seeds without one (or unknown to OpenAlex) are reported, not fatal.
 
 ### Formats (`-f`, or inferred from the `-o` extension)
@@ -89,6 +92,7 @@ papers your corpus cites but lacks, themes, and foundational works:
 
 ```bash
 scopus-for-dobby openalex analyze --collection review --depth 2
+scopus-for-dobby openalex analyze --project review   # seeds = a project's collections
 ```
 
 **For anything beyond building the file — which metrics this graph shape can
@@ -103,10 +107,11 @@ collection create review
 search-all "TITLE-ABS-KEY(...)" --max 100 --collection review   # collect candidates
 openalex enrich --collection review               # OA links + fresh citation counts
 openalex graph --collection review -o map.graphml # graph needs explicit --collection/
-                                                  # --tag/EIDs — no working-collection
-                                                  # default, unlike db add/export
+                                                  # --project/--tag/EIDs — no working-
+                                                  # collection or project default,
+                                                  # unlike db add/export
 ```
 
-Pass `--collection` explicitly on the search too: `search`/`search-all` do **not** honor the working collection — without `-c`, results land in the DB but in no collection, and the enrich/graph steps would operate on an empty set.
+Pass `--collection` explicitly on the search too: `search`/`search-all` do **not** honor the working collection — without `-c`, results land in the DB but in no collection, and the enrich/graph steps would operate on an empty set. There is no `search -p`; to grow a project, search into a new collection and `project add` it — then `--project` covers it in every step above.
 
 Open `map.graphml` in Gephi: cluster layout reveals research themes; high in-degree non-seed nodes are **key papers the collection cites but doesn't contain** — prime candidates for the next `abstract`/`search` round. To **read** a chosen paper's methods or claims, that is the **paper-fulltext** skill (it decides when to ask first). That closes the loop: graph → spot gaps → fetch metadata → (if needed) body → re-graph.

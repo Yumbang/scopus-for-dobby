@@ -39,6 +39,8 @@ search-all "machine learning" --max 200 --sort -pubyear
 
 Options (both commands): `-s/--sort`, `-y/--year` (`2024` or `2020-2024`), `--subject` (COMP, MEDI, PHYS, ENGI, ...), `-t/--tag`, `-c/--collection`, `--no-save`.
 
+There is no `-p/--project` on search: results save into a collection, and projects hold collections. To land results in a project, search with `-c NEW-COLL`, then `project add PROJ NEW-COLL` (see `library.md`).
+
 ### Scopus Field Codes
 
 These go directly in the query string; when detected, the CLI skips the TITLE-ABS-KEY() wrapper:

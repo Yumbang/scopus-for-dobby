@@ -39,11 +39,19 @@ Fetching spends metered quota and can miss on entitlement, so the default is not
 
 **Ask the user first** when:
 
-- Several papers, or a whole collection, would be fetched
+- Several papers, or a whole collection or project, would be fetched
 - It is still a search/screening step and you only *might* need the body
 - Entitlement is uncertain and a miss would change the plan
 
 Name the EIDs/DOIs and say why the body is required. Do not fetch a hit list "just in case".
+
+`--project` is the widest selector: it takes every paper in every collection of the
+project. Count first and put that number in the question to the user before fetching
+a whole project:
+
+```bash
+scopus-for-dobby --json db list -p thesis | jq .total_matching
+```
 
 **Fetch without asking** when:
 
@@ -65,6 +73,7 @@ scopus-for-dobby fulltext 10.1016/j.watres.2026.125855   # DOI
 scopus-for-dobby fulltext 2-s2.0-105035063878            # Scopus EID
 scopus-for-dobby fulltext --indices 1,3                  # from the last search/list
 scopus-for-dobby fulltext --collection thesis-refs       # a saved collection
+scopus-for-dobby fulltext --project thesis               # every collection in a project
 scopus-for-dobby fulltext --tag review --limit 20
 scopus-for-dobby fulltext --query "closed-circuit reverse osmosis"
 scopus-for-dobby fulltext 2-s2.0-aaa 2-s2.0-bbb          # several; duplicates collapse
@@ -79,7 +88,7 @@ scopus-for-dobby --json db list -c thesis-refs -n 1000 \
 `scopus-for-dobby` prefix, but every example here is written to run in a shell as-is.
 
 Identifiers: DOI, Scopus EID (`2-s2.0-...`), or Scopus ID. Pipelines (`--collection` /
-`--tag` / `--query`) resolve saved rows, and mix freely with explicit identifiers in one
+`--project` / `--tag` / `--query`) resolve saved rows, and mix freely with explicit identifiers in one
 invocation. When `--limit` truncates a mixed batch, the identifiers you named explicitly
 are kept and pipeline rows are dropped.
 

@@ -75,6 +75,7 @@ Tags make this work without messy sub-collections:
 - The main agent navigates by tag: `db list --tag ro-biofouling`
 - `db stats` shows the tag distribution — a quick map of what's been searched
 - Tags flow through to `export`, so the user can export by subtopic
+- When research spans several collections (e.g. one per round), group them with `project add` and pass `-p PROJ` wherever the steps above use `--collection` — it selects their deduplicated union
 
 ## Recursive search pattern
 

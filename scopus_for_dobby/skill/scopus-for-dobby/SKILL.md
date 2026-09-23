@@ -1,11 +1,11 @@
 ---
 name: scopus-for-dobby
-description: "Reference guide for using the scopus-for-dobby CLI — a stateful tool for searching Scopus, collecting papers into a local DuckDB database, managing collections/tags/authors, enriching with OpenAlex (open-access links, citation graphs), and exporting to XLSX/BibTeX/RIS. Use this skill whenever the user asks how to use scopus-for-dobby, wants to search Scopus, list / show / filter / sort / count the papers they have saved, read a paper's abstract, title or other metadata, manage their paper database, export references, work with authors, or find a free open-access PDF link. Also trigger on Scopus queries, OpenAlex, field codes, paper collections, citation management, or the dobby REPL. Not for reading the body of a paper — methods, a quote, a figure, an equation, 'what did they actually do/claim' — that is the paper-fulltext skill. Not for reading a citation graph (citation-analysis) or statistically profiling a large corpus (corpus-profiling)."
+description: "Reference guide for using the scopus-for-dobby CLI — a stateful tool for searching Scopus, collecting papers into a local DuckDB database, managing collections/projects/tags/authors, enriching with OpenAlex (open-access links, citation graphs), and exporting to XLSX/BibTeX/RIS. Use this skill whenever the user asks how to use scopus-for-dobby, wants to search Scopus, list / show / filter / sort / count the papers they have saved, read a paper's abstract, title or other metadata, manage their paper database, export references, work with authors, or find a free open-access PDF link. Also trigger on Scopus queries, OpenAlex, field codes, paper collections or projects, citation management, or the dobby REPL. Not for reading the body of a paper — methods, a quote, a figure, an equation, 'what did they actually do/claim' — that is the paper-fulltext skill. Not for reading a citation graph (citation-analysis) or statistically profiling a large corpus (corpus-profiling)."
 ---
 
 # scopus-for-dobby — CLI Reference
 
-A stateful CLI for the Elsevier Scopus API with free OpenAlex enrichment. Search academic papers, collect them into a local DuckDB database, organize with tags and collections, track authors, find open-access PDFs, export citation graphs, and produce XLSX/BibTeX/RIS bibliographies.
+A stateful CLI for the Elsevier Scopus API with free OpenAlex enrichment. Search academic papers, collect them into a local DuckDB database, organize with tags, collections and projects, track authors, find open-access PDFs, export citation graphs, and produce XLSX/BibTeX/RIS bibliographies.
 
 Architecture in one line: each command opens the local DuckDB database in-process — unless a daemon is already running (started by `serve` or the macOS GUI), in which case it goes over HTTP so both share the one connection. All user data lives under `~/.scopus-for-dobby/`.
 
@@ -14,7 +14,7 @@ Architecture in one line: each command opens the local DuckDB database in-proces
 | File | Read when |
 |---|---|
 | `references/search.md` | Building Scopus queries (field codes, filters), fetching abstracts, tier differences, Scopus API quota |
-| `references/library.md` | Managing the local DB: tags, collections, working collection, authors, export, `--json` scripting |
+| `references/library.md` | Managing the local DB: tags, collections, projects, working collection, authors, export, `--json` scripting |
 | `references/openalex.md` | Open-access links, OpenAlex enrichment, citation-graph export (Gephi/networkx) |
 | `references/research-strategy.md` | Any broad/multi-topic literature research — decide direct vs. subagent-delegated **before** searching |
 | `references/troubleshooting.md` | CLI hangs, daemon errors, slow first run, 429s, resetting the DB |
@@ -57,14 +57,18 @@ scopus-for-dobby search "deep learning" --limit 20   # or direct subcommands
 | `search <query> [-n] [-s] [-y] [--subject] [-t] [-c] [--no-save]` | Scopus search, auto-saved to DB (max 25/page) |
 | `search-all <query> --max N` | Paginated search (multiple API calls) |
 | `abstract <DOI\|EID\|ScopusID> [--view FULL]` | Single-paper **metadata**, auto-saved; `FULL` adds abstract text, full author list, keywords, subject areas — not the article body (see `references/search.md`) |
-| `fulltext <DOI\|EID> [-c COLL] [--tag] [--query] [--eids-from-stdin]` | Elsevier full text → `fulltext/<eid>/` bundle. Metered, and it can miss on entitlement — load the **paper-fulltext** skill before using it |
-| `db add / list / info / tag / untag / note / remove / stats` | Local article database (`note`/`info` take an EID only — no `--indices`) |
+| `fulltext <DOI\|EID> [-c COLL] [-p PROJ] [--tag] [--query] [--eids-from-stdin]` | Elsevier full text → `fulltext/<eid>/` bundle. Metered, and it can miss on entitlement — load the **paper-fulltext** skill before using it |
+| `db add / list / info / tag / untag / note / remove / stats` | Local article database (`note`/`info` take an EID only — no `--indices`); `db list [-t] [-c\|-p] [-q]` filters |
 | `collection list / create / add / remove / delete / merge / rename` | Group articles (tags stay independent) |
 | `collection set / unset / current` | **Working collection** — becomes the default for `db add` and `export` |
+| `project list / create / add / remove / rename / delete` | Group collections into projects (one project per collection); `-p PROJ` selects a project's papers |
 | `author list / info / coauthors / fetch / note` | Author DB (auto-extracted); `fetch` pulls h-index/ORCID from Scopus |
-| `export --format xlsx\|bibtex\|ris [-o] [-t] [-c] [--from-last-search]` | Bibliography export, up to 100,000 rows; `--json` is one object on success |
+| `export --format xlsx\|bibtex\|ris [-o] [-t] [-c\|-p] [--from-last-search]` | Bibliography export, up to 100,000 rows; `--json` is one object on success |
 | `openalex enrich / graph / analyze / key / email` | OA PDF links, citation counts, topics; citation-graph files; `analyze` interprets a graph (**citation-analysis** skill). Free, but metered per IP — set `openalex key` first |
+| `profile [-c\|-p] [-t]` | Topic/keyword frequencies over a large saved set — load the **corpus-profiling** skill first |
 | `serve [--port] [--idle-timeout]` | Start the HTTP daemon (needs the `[gui]` extra). Only needed for the macOS GUI, or to run two clients at once — see `references/troubleshooting.md` |
+| `skill install / list / status / uninstall / path` | Install these agent skills for an agent (default: claude) |
+| `repl` | Interactive REPL (same as running with no subcommand) |
 
 Global flag: `--json` before the command gives machine-readable output (`scopus-for-dobby --json db stats`).
 
@@ -76,6 +80,7 @@ Results persist across commands and CLI invocations, which is what makes index-b
 2. `db add --indices 1,3` / `db tag --indices 1,3 ml` / `collection add X --indices 1,3` → indices refer to the last search/list
 3. `db list ...` → its output becomes the new "current results" for subsequent index commands
 4. `collection set thesis` → the **working collection**: `db add` and `export` now default into `thesis` until `collection unset`. An explicit `--collection` always wins. The REPL prompt shows the active one.
+5. There is **no working project** — `-p PROJ` (on `db list`, `export`, `profile`, `fulltext`, `openalex enrich/graph/analyze`) is always explicit and selects the deduplicated union of the project's collections; on `export` it also bypasses the working collection. `search` has no `-p` — save with `-c`, then `project add` the collection.
 
 Session state lives in `~/.scopus-for-dobby/session/`; it survives across invocations, so an index-based command can act on a search from a previous shell.
 
@@ -106,6 +111,12 @@ author fetch 55666793600 && author info 55666793600
 collection create ms-refs && collection set ms-refs
 # ...search; results auto-save; curate with db add --indices / collection add...
 export --format bibtex -o refs.bib
+
+# Sort collections into projects (quote the glob)
+project list                                  # projects + ungrouped count
+project add r1 --match 'r1-*' --dry-run       # preview; creates r1 if missing
+project add r1 --match 'r1-*'
+db list -p r1                                 # union of r1's collections
 ```
 
 For broad research (multiple subtopics, screening 50+ results), do NOT run everything in the main context — read `references/research-strategy.md` first and delegate searches to subagents with tags as provenance. Raw search results are verbose and will flood the context window.
