@@ -606,6 +606,42 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Take collections out of whatever projects they are in — several
+    /// projects at once, one call per project. Ungrouped names are skipped.
+    @discardableResult
+    func ungroupCollections(_ names: [String]) async -> Bool {
+        let byProject = Dictionary(grouping: collections.filter { names.contains($0.name) && $0.project != nil },
+                                   by: { $0.project! })
+        guard !byProject.isEmpty else { return false }
+        do {
+            for (project, members) in byProject.sorted(by: { $0.key < $1.key }) {
+                try await DaemonClient.shared.unassignCollections(project: project,
+                                                                  names: members.map(\.name).sorted())
+            }
+            await reloadAll()
+            return true
+        } catch {
+            await reloadAll()
+            self.lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Delete several collections (articles are kept). Stops at the first
+    /// failure; what was already deleted stays deleted.
+    func deleteCollections(_ names: [String]) async {
+        do {
+            for name in names {
+                try await DaemonClient.shared.deleteCollection(name: name)
+                if selection == .collection(name) { selection = .allArticles }
+            }
+            await reloadAll()
+        } catch {
+            await reloadAll()
+            self.lastError = error.localizedDescription
+        }
+    }
+
     /// The bulk-sorting sheet's Apply: make ``project``'s membership exactly
     /// ``members``. Assigns the newly checked, then unassigns the unchecked,
     /// so the project (and a newly checked collection's move out of another

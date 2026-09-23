@@ -120,10 +120,12 @@ The skeleton ships with a `NavigationSplitView` three-pane layout. Below is what
 - A row with a zero count has a muted label, so empty collections and projects read differently from populated ones.
 - Project context menu: *Choose collections…* (a checkbox sheet for bulk filing — checking a collection filed elsewhere moves it), *Rename…* (inline), *New collection in project…*, *New project…*, *Delete…* (confirmation dialog; the collections are kept, ungrouped).
 - Collection context menu: *Rename…* (inline), *Merge into…* (sheet), *Move to project* submenu (ending in *New project…*), *Remove from "project"* when filed, *Delete*.
+- Multi-pick: ⌘-click toggles a collection, ⇧-click picks a range in sidebar order (expanded projects' members, then ungrouped), and a plain click resets to one. Picked rows get a lighter accent than the selected row. The article list still shows the collection last plain-clicked — a pick is for bulk actions, not a combined view. Right-clicking a picked row gives the bulk menu: *Move N Collections to Project*, *Remove N from Their Projects*, *Deselect*, *Delete N Collections…* (confirmation dialog).
+- Drag: a collection row (or the whole pick, if it is part of one) drags onto a project row or any of an expanded project's members to file it there, and onto the Collections section to ungroup it. The drop target gets an accent outline.
 - Footer: daemon status dot, port, and app/CLI version line.
 
 **Gaps for you:**
-- No drag-and-drop anywhere: articles cannot be dragged onto a collection (adding goes through the multi-select batch panel), and collections cannot be dragged into a project (filing goes through the context menu or the *Choose collections…* sheet). Is drag worth designing for either?
+- Articles cannot be dragged onto a collection (adding goes through the multi-select batch panel); only collections drag, onto projects. Is article drag worth designing?
 - No empty state when zero collections exist — the section is just a header with a `0`.
 - Deleting a collection has no confirmation (deleting a project does).
 - No "smart collection" concept (e.g., "Untagged", "Recently added") — should we have these? Mockup welcome.

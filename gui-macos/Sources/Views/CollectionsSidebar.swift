@@ -11,6 +11,15 @@ struct CollectionsSidebar: View {
     @State private var mergingCollection: String? = nil
     @State private var projectSheet: ProjectSheetContext? = nil
     @State private var deletingProject: String? = nil
+    /// Collections picked with ⌘/⇧-click for a bulk action or a drag. Only
+    /// meaningful with two or more; the list still shows the single
+    /// collection last plain-clicked (``state.selection``).
+    @State private var picked: Set<String> = []
+    /// Where a ⇧-click range starts: the last plain click (Finder/Mail).
+    @State private var pickAnchor: String? = nil
+    /// The drop target under an in-flight drag, for its highlight.
+    @State private var dropTarget: DropTarget? = nil
+    @State private var deletingCollections: [String]? = nil
     /// Expanded project names as a JSON array — ``@AppStorage`` holds only
     /// scalars. Not newline-joined: the CLI accepts a name with a newline in
     /// it, and such a project could then never be expanded.
@@ -83,6 +92,28 @@ struct CollectionsSidebar: View {
                  ? "The project is empty. No collections or articles are affected."
                  : "Its \(n) collection\(n == 1 ? "" : "s") are kept and move back to Collections. No articles are removed.")
         }
+        .confirmationDialog(
+            "Delete \(deletingCollections?.count ?? 0) collections?",
+            isPresented: Binding(
+                get: { deletingCollections != nil },
+                set: { if !$0 { deletingCollections = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: deletingCollections
+        ) { names in
+            Button("Delete \(names.count) Collections", role: .destructive) {
+                picked = []
+                Task { await state.deleteCollections(names) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { names in
+            Text(names.joined(separator: ", ") + "\n\nThe articles stay in the library.")
+        }
+    }
+
+    private enum DropTarget: Equatable {
+        case project(String)
+        case ungrouped
     }
 
     private struct MergeContext: Identifiable {
@@ -126,6 +157,7 @@ struct CollectionsSidebar: View {
                 count: state.libraryTotal ?? state.articles.count,
                 isActive: state.selection == .allArticles
             ) {
+                picked = []
                 state.selectSidebar(.allArticles)
             }
         }
@@ -173,6 +205,14 @@ struct CollectionsSidebar: View {
                 collectionRow(c)
             }
         }
+        // Dropping grouped collections anywhere on this section ungroups them.
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Theme.accent, lineWidth: dropTarget == .ungrouped ? 1.5 : 0)
+        )
+        .dropDestination(for: String.self) { items, _ in
+            handleDrop(items, on: .ungrouped)
+        } isTargeted: { setDropTarget(.ungrouped, $0) }
     }
 
     private func sectionHeader(_ title: String, count: Int) -> some View {
@@ -255,14 +295,19 @@ struct CollectionsSidebar: View {
                 count: p.articleCount,
                 isActive: state.selection == .project(p.name),
                 isEmpty: p.articleCount == 0,
+                isDropTarget: dropTarget == .project(p.name),
                 disclosure: Disclosure(isExpanded: isExpanded(p.name)) {
                     withAnimation(.easeOut(duration: 0.15)) {
                         setExpanded(p.name, !isExpanded(p.name))
                     }
                 }
             ) {
+                picked = []
                 state.selectSidebar(.project(p.name))
             }
+            .dropDestination(for: String.self) { items, _ in
+                handleDrop(items, on: .project(p.name))
+            } isTargeted: { setDropTarget(.project(p.name), $0) }
             .help("\(p.collectionCount) collection\(p.collectionCount == 1 ? "" : "s") · \(p.articleCount) distinct articles")
             .contextMenu {
                 Button("Choose collections…") { presentLater { chooseCollections(for: p.name) } }
@@ -307,11 +352,39 @@ struct CollectionsSidebar: View {
                 count: c.articleCount,
                 isActive: state.selection == .collection(c.name),
                 isEmpty: c.articleCount == 0,
+                isPicked: bulk.contains(c.name),
                 indent: indent
             ) {
+                picked = [c.name]
+                pickAnchor = c.name
                 state.selectSidebar(.collection(c.name))
             }
+            // Modifier clicks. ``onTapGesture``/Button actions cannot see the
+            // modifiers reliably (see ArticleListView), so each modifier set
+            // gets its own gesture; high priority so it beats the row's
+            // Button, and a plain click — which neither matches — falls
+            // through to the Button.
+            .highPriorityGesture(TapGesture().modifiers(.shift).onEnded { rangePick(to: c.name) })
+            .highPriorityGesture(TapGesture().modifiers(.command).onEnded { togglePick(c.name) })
+            .draggable(dragPayload(from: c.name)) { dragPreview(from: c.name) }
+            // A drop on a row goes where that row lives: its project, or the
+            // ungrouped section. So an expanded project takes drops anywhere
+            // over its members, not just on its own row.
+            .dropDestination(for: String.self) { items, _ in
+                handleDrop(items, on: c.project.map(DropTarget.project) ?? .ungrouped)
+            } isTargeted: { setDropTarget(c.project.map(DropTarget.project) ?? .ungrouped, $0) }
             .contextMenu {
+                if bulk.contains(c.name) {
+                    bulkMenu(bulkNames)
+                } else {
+                    singleMenu(c)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func singleMenu(_ c: CollectionInfo) -> some View {
                 Button("Rename…") { startRename(.collection(c.name), draft: c.name) }
                 Button("Merge into…") { presentLater { mergingCollection = c.name } }
                     .disabled(state.collections.count < 2)
@@ -325,7 +398,36 @@ struct CollectionsSidebar: View {
                 Button("Delete \"\(c.name)\"", role: .destructive) {
                     Task { await state.deleteCollection(c.name) }
                 }
+    }
+
+    /// The right-click menu on any row of a multi-collection pick: every
+    /// action applies to the whole pick.
+    @ViewBuilder
+    private func bulkMenu(_ names: [String]) -> some View {
+        let n = names.count
+        let grouped = state.collections.filter { names.contains($0.name) && $0.project != nil }
+        Menu("Move \(n) Collections to Project") {
+            ForEach(state.projects) { p in
+                Button(p.name) {
+                    Task { await state.assignCollections(names, to: p.name) }
+                }
             }
+            if !state.projects.isEmpty { Divider() }
+            Button("New project…") {
+                presentLater {
+                    projectSheet = ProjectSheetContext(mode: .create, initiallyChecked: Set(names))
+                }
+            }
+        }
+        if !grouped.isEmpty {
+            Button("Remove \(grouped.count) from Their Projects") {
+                Task { await state.ungroupCollections(names) }
+            }
+        }
+        Divider()
+        Button("Deselect") { picked = [] }
+        Button("Delete \(n) Collections…", role: .destructive) {
+            presentLater { deletingCollections = names }
         }
     }
 
@@ -353,6 +455,101 @@ struct CollectionsSidebar: View {
                 }
             }
         }
+    }
+
+    // MARK: - Multi-pick and drag
+
+    /// The pick, when it is a multi-pick; empty otherwise. Names that have
+    /// since been deleted or renamed away drop out.
+    private var bulk: Set<String> {
+        let live = picked.intersection(state.collections.map(\.name))
+        return live.count > 1 ? live : []
+    }
+
+    /// ``bulk`` in sidebar order.
+    private var bulkNames: [String] {
+        visibleCollectionOrder.filter { bulk.contains($0) }
+    }
+
+    /// Collection names top to bottom as drawn: expanded projects' members,
+    /// then the ungrouped. A ⇧-click range runs over this order.
+    private var visibleCollectionOrder: [String] {
+        state.projects.flatMap { p in
+            isExpanded(p.name) ? state.collections(in: p.name).map(\.name) : []
+        } + state.ungroupedCollections.map(\.name)
+    }
+
+    private func togglePick(_ name: String) {
+        if picked.isEmpty, case .collection(let current) = state.selection {
+            picked.insert(current)
+        }
+        if picked.contains(name) { picked.remove(name) } else { picked.insert(name) }
+        // The anchor stays on the last plain click, as in Finder.
+    }
+
+    private func rangePick(to name: String) {
+        let order = visibleCollectionOrder
+        let anchor = pickAnchor ?? state.selection.collectionName ?? name
+        guard let a = order.firstIndex(of: anchor), let b = order.firstIndex(of: name) else {
+            picked = [name]
+            return
+        }
+        picked = Set(order[min(a, b)...max(a, b)])
+    }
+
+    /// Drag payloads are plain strings — no custom UTType to declare — so
+    /// they are tagged, and a drop ignores any string without the tag (text
+    /// dragged in from elsewhere).
+    private static let dragTag = "scopus-for-dobby/collections\n"
+
+    /// Dragging a row of a multi-pick drags the whole pick; any other row
+    /// drags just itself.
+    private func dragNames(from name: String) -> [String] {
+        bulk.contains(name) ? bulkNames : [name]
+    }
+
+    private func dragPayload(from name: String) -> String {
+        let data = (try? JSONEncoder().encode(dragNames(from: name))) ?? Data("[]".utf8)
+        return Self.dragTag + String(decoding: data, as: UTF8.self)
+    }
+
+    private func dragPreview(from name: String) -> some View {
+        let names = dragNames(from: name)
+        return Label(names.count == 1 ? name : "\(names.count) collections", systemImage: "folder")
+            .font(.system(size: 12))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Theme.paper, in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func setDropTarget(_ target: DropTarget, _ isTargeted: Bool) {
+        if isTargeted {
+            dropTarget = target
+        } else if dropTarget == target {
+            dropTarget = nil
+        }
+    }
+
+    private func handleDrop(_ items: [String], on target: DropTarget) -> Bool {
+        dropTarget = nil
+        let names = items.flatMap { item -> [String] in
+            guard item.hasPrefix(Self.dragTag) else { return [] }
+            let json = Data(item.dropFirst(Self.dragTag.count).utf8)
+            return (try? JSONDecoder().decode([String].self, from: json)) ?? []
+        }
+        let known = state.collections.filter { names.contains($0.name) }
+        switch target {
+        case .project(let project):
+            let moving = known.filter { $0.project != project }.map(\.name)
+            guard !moving.isEmpty else { return false }
+            Task { await state.assignCollections(moving, to: project) }
+        case .ungrouped:
+            let grouped = known.filter { $0.project != nil }.map(\.name)
+            guard !grouped.isEmpty else { return false }
+            Task { await state.ungroupCollections(grouped) }
+        }
+        picked = []
+        return true
     }
 
     // MARK: - Actions
@@ -498,6 +695,8 @@ struct CollectionsSidebar: View {
         count: Int,
         isActive: Bool,
         isEmpty: Bool = false,
+        isPicked: Bool = false,
+        isDropTarget: Bool = false,
         indent: CGFloat = 0,
         disclosure: Disclosure? = nil,
         action: @escaping () -> Void
@@ -533,8 +732,12 @@ struct CollectionsSidebar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .background(
-                isActive ? Theme.accentSoft : Color.clear,
+                isActive ? Theme.accentSoft : (isPicked ? Theme.accentSoft.opacity(0.55) : Color.clear),
                 in: RoundedRectangle(cornerRadius: 6)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Theme.accent, lineWidth: isDropTarget ? 1.5 : 0)
             )
         }
         .buttonStyle(.plain)
