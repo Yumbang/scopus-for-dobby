@@ -26,11 +26,11 @@ _ALL = 100_000
 _SHOW_PATHS = 10
 
 
-def _articles_from_pipeline(collection, tag, query, limit) -> list[dict]:
+def _articles_from_pipeline(collection, tag, query, limit, project=None) -> list[dict]:
     n = limit if limit is not None else _ALL
-    return db_mod.list_articles(tag=tag, collection=collection, query=query, sort="added", limit=n)[
-        "articles"
-    ]
+    return db_mod.list_articles(
+        tag=tag, collection=collection, query=query, sort="added", limit=n, project=project
+    )["articles"]
 
 
 def _eids_from_indices(indices: str) -> list[str]:
@@ -59,6 +59,7 @@ def resolve_items(
     eids_from_file: str | None,
     eids_from_stdin: bool,
     limit: int | None,
+    project: str | None = None,
 ) -> list[dict]:
     """Union pipeline rows and explicit identifiers; de-dupe by EID/DOI."""
     items: list[dict] = []
@@ -86,8 +87,8 @@ def resolve_items(
         article = db_mod.lookup_article(ident)
         _add(ft.item_from_identifier(ident, article))
 
-    if collection or tag or query:
-        for article in _articles_from_pipeline(collection, tag, query, limit):
+    if collection or tag or query or project:
+        for article in _articles_from_pipeline(collection, tag, query, limit, project):
             _add(ft.item_from_article(article))
 
     if limit is not None:
@@ -112,6 +113,8 @@ def _stamp_if_in_db(row: dict) -> None:
 @click.command("fulltext")
 @click.argument("identifiers", nargs=-1)
 @click.option("--collection", "-c", default=None, help="All articles in this collection")
+@click.option("--project", "-p", default=None, help="All articles in a project's collections (deduplicated); excludes --collection",
+)
 @click.option("--tag", "-t", default=None, help="All articles with this tag")
 @click.option("--query", "-q", default=None, help="Text search over the local library")
 @click.option(
@@ -128,6 +131,7 @@ def _stamp_if_in_db(row: dict) -> None:
 def fulltext_cmd(
     identifiers,
     collection,
+    project,
     tag,
     query,
     indices,
@@ -147,22 +151,33 @@ def fulltext_cmd(
     Examples:
       scopus-for-dobby fulltext 10.1016/j.watres.2026.125855
       scopus-for-dobby fulltext --collection thesis-refs
+      scopus-for-dobby fulltext --project thesis
       scopus-for-dobby fulltext 2-s2.0-105035063878 2-s2.0-85012345678
       scopus-for-dobby --json db list -c thesis-refs -n 1000 \\
         | jq -r '.articles[].eid' | scopus-for-dobby fulltext --eids-from-stdin
     """
+    if project and collection:
+        raise click.UsageError("Pass either --project or --collection, not both.")
     if not (
-        identifiers or collection or tag or query or indices or eids_from_file or eids_from_stdin
+        identifiers
+        or collection
+        or project
+        or tag
+        or query
+        or indices
+        or eids_from_file
+        or eids_from_stdin
     ):
         raise click.UsageError(
             "Provide identifiers (DOI / EID / Scopus ID), --indices, "
             "--eids-from-file / --eids-from-stdin, or a DuckDB pipeline "
-            "(--collection / --tag / --query)."
+            "(--collection / --project / --tag / --query)."
         )
 
     items = resolve_items(
         identifiers,
         collection=collection,
+        project=project,
         tag=tag,
         query=query,
         indices=indices,

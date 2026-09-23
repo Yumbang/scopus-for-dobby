@@ -38,13 +38,19 @@ def _export_empty(fmt: str, human: str, reason: str) -> None:
 @click.option("--tag", "-t", default=None, help="Export only articles with this tag")
 @click.option("--collection", "-c", default=None, help="Export only this collection")
 @click.option(
+    "--project",
+    "-p",
+    default=None,
+    help="Export every collection in a project (deduplicated); excludes --collection",
+)
+@click.option(
     "--from-last-search",
     "from_search",
     is_flag=True,
     help="Export last search results (not from DB)",
 )
 @handle_error
-def export_cmd(fmt, output_path, tag, collection, from_search):
+def export_cmd(fmt, output_path, tag, collection, project, from_search):
     """Export articles to XLSX, BibTeX, or RIS.
 
     By default, exports from the local database. Use --from-last-search
@@ -54,8 +60,12 @@ def export_cmd(fmt, output_path, tag, collection, from_search):
     Examples:
       scopus-for-dobby export --format xlsx -o papers.xlsx
       scopus-for-dobby export --format bibtex --collection thesis-refs
+      scopus-for-dobby export --format ris --project thesis
       scopus-for-dobby export --from-last-search --format bibtex -o refs.bib
     """
+    if project and collection:
+        raise click.UsageError("Pass either --project or --collection, not both.")
+
     # Counts exist only for a database read. --from-last-search has neither.
     counts = None
 
@@ -76,7 +86,9 @@ def export_cmd(fmt, output_path, tag, collection, from_search):
             except ValueError:
                 articles.append(e)
     else:
-        if collection is None:
+        # An explicit --project is an explicit scope: the working collection is
+        # a default for when none was given, so it must not narrow a project.
+        if collection is None and project is None:
             session = get_session()
             if session.working_collection:
                 collection = session.working_collection
@@ -84,7 +96,7 @@ def export_cmd(fmt, output_path, tag, collection, from_search):
                     from scopus_for_dobby.utils.repl_skin import ReplSkin
 
                     ReplSkin().info(f"Using working collection '{collection}'")
-        listed = db_mod.list_articles(tag=tag, collection=collection, limit=_ALL)
+        listed = db_mod.list_articles(tag=tag, collection=collection, project=project, limit=_ALL)
         articles = listed["articles"]
         counts = (listed["total_matching"], listed["total_in_db"])
 

@@ -17,6 +17,7 @@ startup path of commands that never reach this backend.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 from .serve import daemon_endpoint
 
@@ -45,31 +46,62 @@ def _client():
     return httpx.Client(base_url=base_url, timeout=timeout)
 
 
+def _seg(name: str) -> str:
+    """Percent-encode one path segment, so ``?``, ``#`` and ``%`` in a name
+    address that name rather than truncating the URL."""
+    return quote(name, safe="")
+
+
+def _check(r) -> None:
+    """Raise like the in-process backend would.
+
+    The server turns a core ``ValueError`` into a 400 carrying its message;
+    re-raise it as one so the CLI prints "Collection(s) not found: x" rather
+    than httpx's "Client error '400 Bad Request' for url ...".
+    """
+    if r.status_code == 400:
+        try:
+            msg = r.json().get("error")
+        except ValueError:
+            msg = None
+        if msg:
+            raise ValueError(msg)
+    r.raise_for_status()
+
+
 def _get(path: str, **params: Any) -> Any:
     params = {k: v for k, v in params.items() if v is not None}
     with _client() as c:
         r = c.get(path, params=params)
-        r.raise_for_status()
+        _check(r)
         return r.json()
 
 
 def _post(path: str, body: dict | None = None) -> Any:
     with _client() as c:
         r = c.post(path, json=body or {})
-        r.raise_for_status()
+        _check(r)
         return r.json()
 
 
 def _delete(path: str, body: dict | None = None) -> Any:
     with _client() as c:
         r = c.request("DELETE", path, json=body or {})
-        r.raise_for_status()
+        _check(r)
         return r.json()
 
 
 # ── Articles ──────────────────────────────────────────────────────────────────
-def list_articles(*, tag=None, collection=None, query=None, sort="added", limit=50):
-    return _get("/articles", tag=tag, collection=collection, query=query, sort=sort, limit=limit)
+def list_articles(*, tag=None, collection=None, query=None, sort="added", limit=50, project=None):
+    return _get(
+        "/articles",
+        tag=tag,
+        collection=collection,
+        query=query,
+        sort=sort,
+        limit=limit,
+        project=project,
+    )
 
 
 def get_article(eid: str):
@@ -119,20 +151,20 @@ def list_collections():
     return _get("/collections")
 
 
-def create_collection(name: str):
-    return _post("/collections", {"name": name})
+def create_collection(name: str, project: str | None = None):
+    return _post("/collections", {"name": name, "project": project})
 
 
 def delete_collection(name: str):
-    return _delete(f"/collections/{name}")
+    return _delete(f"/collections/{_seg(name)}")
 
 
 def add_to_collection(name: str, eids):
-    return _post(f"/collections/{name}/articles", {"eids": list(eids)})
+    return _post(f"/collections/{_seg(name)}/articles", {"eids": list(eids)})
 
 
 def remove_from_collection(name: str, eids):
-    return _delete(f"/collections/{name}/articles", {"eids": list(eids)})
+    return _delete(f"/collections/{_seg(name)}/articles", {"eids": list(eids)})
 
 
 def merge_collections(src: str, dst: str):
@@ -141,6 +173,31 @@ def merge_collections(src: str, dst: str):
 
 def rename_collection(old: str, new: str):
     return _post("/collections/rename", {"old": old, "new": new})
+
+
+# ── Projects ──────────────────────────────────────────────────────────────────
+def list_projects():
+    return _get("/projects")
+
+
+def create_project(name: str):
+    return _post("/projects", {"name": name})
+
+
+def delete_project(name: str):
+    return _delete(f"/projects/{_seg(name)}")
+
+
+def rename_project(old: str, new: str):
+    return _post("/projects/rename", {"old": old, "new": new})
+
+
+def assign_collections(project: str, names):
+    return _post(f"/projects/{_seg(project)}/collections", {"collections": list(names)})
+
+
+def unassign_collections(project: str, names):
+    return _delete(f"/projects/{_seg(project)}/collections", {"collections": list(names)})
 
 
 # ── Authors ───────────────────────────────────────────────────────────────────

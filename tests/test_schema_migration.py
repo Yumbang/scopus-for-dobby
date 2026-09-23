@@ -183,6 +183,70 @@ class TestV2ToV3:
         assert _version(conn) == db_mod.SCHEMA_VERSION
 
 
+class TestV3ToV4:
+    """v3 databases gain ``collections.project`` and the ``projects`` table."""
+
+    def _seed_v3(self, path):
+        _seed(path, stamp_version=3, with_v2_columns=True)
+        raw = duckdb.connect(str(path))
+        raw.execute("ALTER TABLE articles ADD COLUMN fulltext_fetched_at VARCHAR DEFAULT ''")
+        # `_seed` never creates `collections`; write the v3 shape by hand.
+        raw.execute(
+            "CREATE TABLE collections (name VARCHAR PRIMARY KEY, created_at VARCHAR)"
+        )
+        raw.execute("INSERT INTO collections VALUES ('r1-a', '2025-01-01'), ('r1-b', '')")
+        raw.close()
+
+    def _collection_columns(self, conn) -> list[str]:
+        return [
+            r[0]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'main' AND table_name = 'collections' "
+                "ORDER BY ordinal_position"
+            ).fetchall()
+        ]
+
+    def test_adds_project_column(self, db_path):
+        self._seed_v3(db_path)
+        conn = db_mod._get_conn()
+        assert self._collection_columns(conn) == ["name", "created_at", "project"]
+        assert _version(conn) == 4
+
+    def test_existing_collections_are_ungrouped(self, db_path):
+        self._seed_v3(db_path)
+        colls = db_mod.list_collections()["collections"]
+        assert set(colls) == {"r1-a", "r1-b"}
+        assert all(c["project"] is None for c in colls.values())
+        assert db_mod.list_projects() == {"projects": {}}
+
+    def test_collections_are_writable_after_migration(self, db_path):
+        self._seed_v3(db_path)
+        db_mod.create_collection("new")
+        db_mod.assign_collections("r1", ["r1-a", "new"])
+        assert db_mod.list_projects()["projects"]["r1"]["collections"] == ["new", "r1-a"]
+
+    def test_migrated_catalog_matches_fresh(self, db_path, tmp_path, monkeypatch):
+        self._seed_v3(db_path)
+        migrated = self._catalog(db_mod._get_conn())
+        db_mod.close_cached_connections()
+
+        fresh_path = tmp_path / "fresh.duckdb"
+        monkeypatch.setattr(db_mod, "DB_PATH", fresh_path)
+        fresh = self._catalog(db_mod._get_conn())
+        assert migrated["collections"] == fresh["collections"]
+        assert migrated["projects"] == fresh["projects"]
+
+    @staticmethod
+    def _catalog(conn) -> dict[str, str]:
+        return {
+            name: " ".join(sql.split())
+            for name, sql in conn.execute(
+                "SELECT table_name, sql FROM duckdb_tables() WHERE schema_name = 'main'"
+            ).fetchall()
+        }
+
+
 class TestHealthyDatabases:
     """Databases that need nothing done must be left alone and stay quiet."""
 

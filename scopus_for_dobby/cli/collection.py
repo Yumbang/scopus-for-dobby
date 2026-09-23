@@ -34,22 +34,37 @@ def collection_list():
 
     skin.section("Collections")
     for name, meta in colls.items():
-        skin.status(name, f"{meta['article_count']} articles (created {meta['created']})")
+        line = f"{meta['article_count']} articles (created {meta['created']})"
+        if meta.get("project"):
+            line += f"  [{meta['project']}]"
+        skin.status(name, line)
 
 
 @collection_cmd.command("create")
 @click.argument("name")
+@click.option("--project", "-p", default=None, help="File the new collection into this project")
 @handle_error
-def collection_create(name):
-    """Create a new collection."""
-    result = db_mod.create_collection(name)
+def collection_create(name, project):
+    """Create a new collection, optionally inside a project (created if missing).
+
+    \b
+    Examples:
+      scopus-for-dobby collection create thesis-refs
+      scopus-for-dobby collection create lidar-refs --project thesis
+    """
+    result = db_mod.create_collection(name, project=project)
     if state.json_output:
         output(result)
         return
     from scopus_for_dobby.utils.repl_skin import ReplSkin
 
     skin = ReplSkin()
-    skin.success(f"Collection '{name}' created")
+    if project:
+        if result.get("project_created"):
+            skin.info(f"Created project '{project}'")
+        skin.success(f"Collection '{name}' created in project '{project}'")
+    else:
+        skin.success(f"Collection '{name}' created")
 
 
 @collection_cmd.command("delete")

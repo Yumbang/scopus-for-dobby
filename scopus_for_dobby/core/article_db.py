@@ -27,7 +27,7 @@ DB_PATH = CONFIG_DIR / "articles.duckdb"
 
 # Current on-disk schema version. Bump and add a migration gate in
 # ``_ensure_schema`` whenever the DDL changes incompatibly.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 logger = logging.getLogger(__name__)
 
@@ -105,24 +105,37 @@ _V2_ARTICLE_COLUMNS = (
 # The body itself is never a column — see core/fulltext.py.
 _V3_ARTICLE_COLUMNS = (("fulltext_fetched_at", "fulltext_fetched_at VARCHAR DEFAULT ''"),)
 
+# v3 → v4: a collection may belong to one project. NULL means ungrouped.
+# Deliberately no index on ``collections``: DuckDB refuses ALTER TABLE on a
+# table with a dependent index, which would block every later migration here.
+_V4_COLLECTION_COLUMNS = (("project", "project VARCHAR"),)
 
-def _add_missing_article_columns(
-    conn: duckdb.DuckDBPyConnection, spec: tuple[tuple[str, str], ...]
+
+def _add_missing_columns(
+    conn: duckdb.DuckDBPyConnection, table: str, spec: tuple[tuple[str, str], ...]
 ) -> list[str]:
-    """Add any missing columns from ``spec``. Idempotent. Returns names added."""
+    """Add any missing columns from ``spec`` to ``table``. Idempotent. Returns names added."""
     present = {
         r[0]
         for r in conn.execute(
             "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema = 'main' AND table_name = 'articles'"
+            "WHERE table_schema = 'main' AND table_name = ?",
+            [table],
         ).fetchall()
     }
     added = []
     for name, col_ddl in spec:
         if name not in present:
-            conn.execute(f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col_ddl}")  # noqa: S608
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_ddl}")  # noqa: S608
             added.append(name)
     return added
+
+
+def _add_missing_article_columns(
+    conn: duckdb.DuckDBPyConnection, spec: tuple[tuple[str, str], ...]
+) -> list[str]:
+    """Add any missing ``articles`` columns from ``spec``. Idempotent. Returns names added."""
+    return _add_missing_columns(conn, "articles", spec)
 
 
 def _migrate_v1_to_v2(conn: duckdb.DuckDBPyConnection) -> list[str]:
@@ -188,6 +201,15 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS collections (
+            name       VARCHAR PRIMARY KEY,
+            created_at VARCHAR,
+            project    VARCHAR
+        )
+    """)
+    # One level above collections. Membership lives on ``collections.project``
+    # (a collection is in at most one project); integrity is kept in code.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
             name       VARCHAR PRIMARY KEY,
             created_at VARCHAR
         )
@@ -270,6 +292,17 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     else:
         version = row[0]
 
+    if version > SCHEMA_VERSION:
+        # A newer install has migrated this file. Writing to it with this
+        # code's DDL assumptions fails in obscure ways (v3 code, for one,
+        # cannot insert into v4's three-column ``collections``), so refuse
+        # up front with something the user can act on.
+        raise RuntimeError(
+            f"{path} was written by a newer scopus-for-dobby (schema v{version}; "
+            f"this install understands up to v{SCHEMA_VERSION}). Upgrade this "
+            'install — e.g. `uv tool install --reinstall --editable ".[gui]"`.'
+        )
+
     # Reconcile the columns that actually exist against what the current schema
     # expects. This runs regardless of the stamp: databases mis-stamped by the
     # bug described above already exist in the wild, and a version number is
@@ -277,6 +310,7 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     migrating = version < SCHEMA_VERSION
     added = _migrate_v1_to_v2(conn)
     added += _add_missing_article_columns(conn, _V3_ARTICLE_COLUMNS)
+    added += _add_missing_columns(conn, "collections", _V4_COLLECTION_COLUMNS)
 
     if migrating:
         conn.execute("UPDATE schema_meta SET version = ?", [SCHEMA_VERSION])
@@ -882,7 +916,7 @@ def add_entries(
                 "SELECT name FROM collections WHERE name = ?", [collection]
             ).fetchone()
             conn.execute(
-                "INSERT OR IGNORE INTO collections VALUES (?, ?)",
+                "INSERT OR IGNORE INTO collections (name, created_at) VALUES (?, ?)",
                 [collection, _now()],
             )
             if not created:
@@ -951,12 +985,30 @@ def list_articles(
     query: str | None = None,
     sort: str = "added",
     limit: int = 50,
+    project: str | None = None,
 ) -> dict:
-    """List articles in the database with optional filters."""
+    """List articles in the database with optional filters.
+
+    ``project`` selects the deduplicated union of its member collections. It
+    is exclusive with ``collection`` and, unlike an unknown collection, an
+    unknown project raises — a typo should be loud, not an empty result.
+    """
     conn = _get_conn()
+
+    if project is not None and collection:
+        raise ValueError("Pass either a project or a collection, not both")
 
     where_clauses = []
     params = []
+
+    if project is not None:
+        if not conn.execute("SELECT 1 FROM projects WHERE name = ?", [project]).fetchone():
+            raise ValueError(f"Project not found: {project}")
+        where_clauses.append(
+            "eid IN (SELECT ca.eid FROM collection_articles ca "
+            "JOIN collections c ON c.name = ca.collection_name WHERE c.project = ?)"
+        )
+        params.append(project)
 
     if collection:
         where_clauses.append(
@@ -1205,6 +1257,16 @@ def get_article(eid: str) -> dict:
     columns = [desc[0] for desc in conn.description]
     article = _row_to_dict(row, columns)
     article["collections"] = collections_for_eids([eid]).get(eid, [])
+    article["projects"] = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT p.name FROM collection_articles ca "
+            "JOIN collections c ON c.name = ca.collection_name "
+            "JOIN projects p ON p.name = c.project "
+            "WHERE ca.eid = ? ORDER BY p.name",
+            [eid],
+        ).fetchall()
+    ]
     return article
 
 
@@ -1303,30 +1365,45 @@ def record_fulltext_fetch(eid: str, roles: dict | None = None) -> dict:
 
 
 def list_collections() -> dict:
-    """List all collections with article counts."""
+    """List all collections with article counts and the project each is in."""
     conn = _get_conn()
     rows = conn.execute("""
-        SELECT c.name, c.created_at, COUNT(ca.eid) as cnt
+        SELECT c.name, c.created_at, c.project, COUNT(ca.eid) as cnt
         FROM collections c
         LEFT JOIN collection_articles ca ON c.name = ca.collection_name
-        GROUP BY c.name, c.created_at
+        GROUP BY c.name, c.created_at, c.project
     """).fetchall()
     result = {}
-    for name, created, cnt in rows:
-        result[name] = {"article_count": cnt, "created": created or ""}
+    for name, created, project, cnt in rows:
+        result[name] = {"article_count": cnt, "created": created or "", "project": project}
     return {"collections": result}
 
 
-def create_collection(name: str) -> dict:
-    """Create a new empty collection."""
+def create_collection(name: str, project: str | None = None) -> dict:
+    """Create a new empty collection, optionally filed straight into ``project``.
+
+    A missing ``project`` is created, as ``assign_collections`` would.
+    """
+    if project is not None:
+        _check_project_name(project)
     conn = _get_conn()
     existing = conn.execute("SELECT name FROM collections WHERE name = ?", [name]).fetchone()
     if existing:
         raise ValueError(f"Collection already exists: {name}")
+    project_created = False
     with _txn(conn):
-        conn.execute("INSERT INTO collections VALUES (?, ?)", [name, _now()])
-        _emit_event(conn, "collection.created", "collection", name, {})
-    return {"created": name}
+        if project:
+            project_created = _ensure_project(conn, project)
+        conn.execute(
+            "INSERT INTO collections (name, created_at, project) VALUES (?, ?, ?)",
+            [name, _now(), project or None],
+        )
+        _emit_event(conn, "collection.created", "collection", name, {"project": project or None})
+    result = {"created": name}
+    if project:
+        result["project"] = project
+        result["project_created"] = project_created
+    return result
 
 
 def delete_collection(name: str) -> dict:
@@ -1346,19 +1423,23 @@ def merge_collections(src: str, dst: str) -> dict:
     """Merge collection ``src`` into ``dst`` and delete ``src``.
 
     Set-union semantics: articles in both end up once in ``dst``. ``dst`` is
-    auto-created if missing. ``src == dst`` is a no-op. Atomic — partial
+    auto-created if missing, and then inherits ``src``'s project; an existing
+    ``dst`` keeps its own. ``src == dst`` is a no-op. Atomic — partial
     failure rolls back. Emits one ``collection.merged`` event.
     """
     conn = _get_conn()
     if src == dst:
         return {"merged_from": src, "merged_to": dst, "moved": 0, "noop": True}
 
-    src_row = conn.execute("SELECT name FROM collections WHERE name = ?", [src]).fetchone()
+    src_row = conn.execute("SELECT project FROM collections WHERE name = ?", [src]).fetchone()
     if not src_row:
         raise ValueError(f"Source collection not found: {src}")
 
     with _txn(conn):
-        conn.execute("INSERT OR IGNORE INTO collections VALUES (?, ?)", [dst, _now()])
+        conn.execute(
+            "INSERT OR IGNORE INTO collections (name, created_at, project) VALUES (?, ?, ?)",
+            [dst, _now(), src_row[0]],
+        )
         before = conn.execute(
             "SELECT COUNT(*) FROM collection_articles WHERE collection_name = ?",
             [dst],
@@ -1387,19 +1468,24 @@ def merge_collections(src: str, dst: str) -> dict:
 
 
 def rename_collection(old: str, new: str) -> dict:
-    """Rename a collection, preserving ``created_at`` and article membership."""
+    """Rename a collection, preserving ``created_at``, project and article membership."""
     conn = _get_conn()
     if old == new:
         return {"renamed_from": old, "renamed_to": new, "noop": True}
-    src_row = conn.execute("SELECT created_at FROM collections WHERE name = ?", [old]).fetchone()
+    src_row = conn.execute(
+        "SELECT created_at, project FROM collections WHERE name = ?", [old]
+    ).fetchone()
     if not src_row:
         raise ValueError(f"Collection not found: {old}")
     if conn.execute("SELECT 1 FROM collections WHERE name = ?", [new]).fetchone():
         raise ValueError(f"Collection already exists: {new}")
 
-    created_at = src_row[0]
+    created_at, project = src_row
     with _txn(conn):
-        conn.execute("INSERT INTO collections VALUES (?, ?)", [new, created_at])
+        conn.execute(
+            "INSERT INTO collections (name, created_at, project) VALUES (?, ?, ?)",
+            [new, created_at, project],
+        )
         conn.execute(
             "UPDATE collection_articles SET collection_name = ? WHERE collection_name = ?",
             [new, old],
@@ -1421,7 +1507,9 @@ def add_to_collection(name: str, eids: list[str]) -> dict:
     added = 0
     with _txn(conn):
         created = conn.execute("SELECT name FROM collections WHERE name = ?", [name]).fetchone()
-        conn.execute("INSERT OR IGNORE INTO collections VALUES (?, ?)", [name, _now()])
+        conn.execute(
+            "INSERT OR IGNORE INTO collections (name, created_at) VALUES (?, ?)", [name, _now()]
+        )
         if not created:
             _emit_event(conn, "collection.created", "collection", name, {})
 
@@ -1477,6 +1565,204 @@ def remove_from_collection(name: str, eids: list[str]) -> dict:
     return {"collection": name, "removed": removed, "total": total}
 
 
+# ── Project management ───────────────────────────────────────────────────────
+#
+# A project groups collections, one level deep. Membership is the
+# ``collections.project`` column, so a collection is in at most one project,
+# and a project never holds articles directly — its papers are the union of
+# its collections'.
+
+
+def _check_project_name(name) -> str:
+    """Reject names that cannot round-trip: empty, or unaddressable in a URL path."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Project name must not be empty")
+    if "/" in name or name in (".", ".."):
+        raise ValueError(f"Project name may not contain '/' or be '.' or '..': {name!r}")
+    return name
+
+
+def _ensure_project(conn: duckdb.DuckDBPyConnection, name: str) -> bool:
+    """Create ``name`` if missing, inside the caller's transaction. Returns whether it did."""
+    if conn.execute("SELECT 1 FROM projects WHERE name = ?", [name]).fetchone():
+        return False
+    conn.execute("INSERT INTO projects (name, created_at) VALUES (?, ?)", [name, _now()])
+    _emit_event(conn, "project.created", "project", name, {})
+    return True
+
+
+def _collection_name_list(names) -> list[str]:
+    """Deduplicated, order-preserving list of names. A bare string is refused
+    rather than iterated — ``"ab"`` would otherwise mean collections a and b."""
+    if isinstance(names, str) or not isinstance(names, (list, tuple)):
+        raise ValueError("collections must be a list of names")
+    names = list(dict.fromkeys(n for n in names if n))
+    if not names:
+        raise ValueError("No collections given")
+    return names
+
+
+def _validate_collection_names(conn: duckdb.DuckDBPyConnection, names: list[str]) -> None:
+    unknown = [
+        n
+        for n in names
+        if not conn.execute("SELECT 1 FROM collections WHERE name = ?", [n]).fetchone()
+    ]
+    if unknown:
+        raise ValueError(f"Collection(s) not found: {', '.join(unknown)}")
+
+
+def list_projects() -> dict:
+    """List projects with their member collections and distinct article counts."""
+    conn = _get_conn()
+    projects = {
+        name: {"created": created or "", "collections": []}
+        for name, created in conn.execute("SELECT name, created_at FROM projects").fetchall()
+    }
+    for coll, project in conn.execute(
+        "SELECT name, project FROM collections WHERE project IS NOT NULL ORDER BY name"
+    ).fetchall():
+        if project in projects:
+            projects[project]["collections"].append(coll)
+    counts = dict(
+        conn.execute("""
+            SELECT c.project, COUNT(DISTINCT ca.eid)
+            FROM collections c
+            JOIN collection_articles ca ON c.name = ca.collection_name
+            WHERE c.project IS NOT NULL
+            GROUP BY c.project
+        """).fetchall()
+    )
+    for name, info in projects.items():
+        info["collection_count"] = len(info["collections"])
+        info["article_count"] = counts.get(name, 0)
+    return {"projects": projects}
+
+
+def create_project(name: str) -> dict:
+    """Create a new empty project."""
+    _check_project_name(name)
+    conn = _get_conn()
+    if conn.execute("SELECT 1 FROM projects WHERE name = ?", [name]).fetchone():
+        raise ValueError(f"Project already exists: {name}")
+    with _txn(conn):
+        _ensure_project(conn, name)
+    return {"created": name}
+
+
+def delete_project(name: str) -> dict:
+    """Delete a project. Its collections are kept, ungrouped."""
+    conn = _get_conn()
+    if not conn.execute("SELECT 1 FROM projects WHERE name = ?", [name]).fetchone():
+        raise ValueError(f"Project not found: {name}")
+    with _txn(conn):
+        released = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM collections WHERE project = ? ORDER BY name", [name]
+            ).fetchall()
+        ]
+        conn.execute("UPDATE collections SET project = NULL WHERE project = ?", [name])
+        conn.execute("DELETE FROM projects WHERE name = ?", [name])
+        _emit_event(conn, "project.deleted", "project", name, {"released": released})
+    return {"deleted": name, "released": released}
+
+
+def rename_project(old: str, new: str) -> dict:
+    """Rename a project, preserving ``created_at`` and its collections."""
+    _check_project_name(new)
+    conn = _get_conn()
+    if old == new:
+        return {"renamed_from": old, "renamed_to": new, "noop": True}
+    src_row = conn.execute("SELECT created_at FROM projects WHERE name = ?", [old]).fetchone()
+    if not src_row:
+        raise ValueError(f"Project not found: {old}")
+    if conn.execute("SELECT 1 FROM projects WHERE name = ?", [new]).fetchone():
+        raise ValueError(f"Project already exists: {new}")
+    created_at = src_row[0]
+    with _txn(conn):
+        conn.execute("INSERT INTO projects (name, created_at) VALUES (?, ?)", [new, created_at])
+        conn.execute("UPDATE collections SET project = ? WHERE project = ?", [new, old])
+        conn.execute("DELETE FROM projects WHERE name = ?", [old])
+        _emit_event(
+            conn,
+            "project.renamed",
+            "project",
+            new,
+            {"renamed_from": old, "created_at": created_at},
+        )
+    return {"renamed_from": old, "renamed_to": new, "created_at": created_at}
+
+
+def assign_collections(project: str, names: list[str]) -> dict:
+    """Put collections into ``project``, moving them out of any other project.
+
+    All-or-nothing: every name is validated before anything changes. The
+    project is created if missing, as ``add_to_collection`` does for
+    collections. Collections already in ``project`` are left alone.
+    """
+    _check_project_name(project)
+    names = _collection_name_list(names)
+    conn = _get_conn()
+    assigned: list[str] = []
+    moved_from: dict[str, str] = {}
+    # Validation inside the transaction: raising rolls back, and holding the
+    # write lock means a concurrent delete cannot land between check and use.
+    with _txn(conn):
+        _validate_collection_names(conn, names)
+        created = _ensure_project(conn, project)
+        for name in names:
+            previous = conn.execute(
+                "SELECT project FROM collections WHERE name = ?", [name]
+            ).fetchone()[0]
+            if previous == project:
+                continue
+            conn.execute("UPDATE collections SET project = ? WHERE name = ?", [project, name])
+            assigned.append(name)
+            if previous is not None:
+                moved_from[name] = previous
+            _emit_event(
+                conn,
+                "collection.project_changed",
+                "collection",
+                name,
+                {"project": project, "previous": previous},
+            )
+    return {"project": project, "assigned": assigned, "moved_from": moved_from, "created": created}
+
+
+def unassign_collections(project: str, names: list[str]) -> dict:
+    """Take collections out of ``project``. They are kept, ungrouped.
+
+    All-or-nothing: raises before changing anything if any name is not in
+    ``project``.
+    """
+    names = _collection_name_list(names)
+    conn = _get_conn()
+    with _txn(conn):
+        if not conn.execute("SELECT 1 FROM projects WHERE name = ?", [project]).fetchone():
+            raise ValueError(f"Project not found: {project}")
+        _validate_collection_names(conn, names)
+        outside = [
+            n
+            for n in names
+            if conn.execute("SELECT project FROM collections WHERE name = ?", [n]).fetchone()[0]
+            != project
+        ]
+        if outside:
+            raise ValueError(f"Not in project {project}: {', '.join(outside)}")
+        for name in names:
+            conn.execute("UPDATE collections SET project = NULL WHERE name = ?", [name])
+            _emit_event(
+                conn,
+                "collection.project_changed",
+                "collection",
+                name,
+                {"project": None, "previous": project},
+            )
+    return {"project": project, "unassigned": names}
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 
@@ -1487,6 +1773,7 @@ def stats() -> dict:
     total_articles = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
     total_authors = conn.execute("SELECT COUNT(*) FROM authors").fetchone()[0]
     total_collections = conn.execute("SELECT COUNT(*) FROM collections").fetchone()[0]
+    total_projects = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
 
     # Gather all tags
     tag_rows = conn.execute("SELECT tags FROM articles WHERE tags != '[]'").fetchall()
@@ -1511,6 +1798,7 @@ def stats() -> dict:
         "total_articles": total_articles,
         "total_authors": total_authors,
         "total_collections": total_collections,
+        "total_projects": total_projects,
         "total_tags": len(tag_counts),
         "tags": tag_counts,
         "years": year_counts,

@@ -91,6 +91,12 @@ def db_add(from_search, indices, from_abstract, tag, collection):
 @click.option("--tag", "-t", default=None, help="Filter by tag")
 @click.option("--collection", "-c", default=None, help="Filter by collection")
 @click.option(
+    "--project",
+    "-p",
+    default=None,
+    help="Filter to every collection in a project (deduplicated); excludes --collection",
+)
+@click.option(
     "--query",
     "-q",
     default=None,
@@ -105,21 +111,25 @@ def db_add(from_search, indices, from_abstract, tag, collection):
 )
 @click.option("--limit", "-n", type=int, default=50, help="Max results")
 @handle_error
-def db_list(tag, collection, query, sort, limit):
+def db_list(tag, collection, project, query, sort, limit):
     """List articles in the local database.
 
     \b
     Examples:
       scopus-for-dobby db list --tag survey --sort cited
       scopus-for-dobby db list --collection thesis-refs
+      scopus-for-dobby db list --project thesis --query lidar
       scopus-for-dobby db list --query "transformer" --limit 10
     """
+    if project and collection:
+        raise click.UsageError("Pass either --project or --collection, not both.")
     result = db_mod.list_articles(
         tag=tag,
         collection=collection,
         query=query,
         sort=sort,
         limit=limit,
+        project=project,
     )
 
     if state.json_output:
@@ -286,6 +296,7 @@ def db_stats():
     skin.status("Articles", str(result["total_articles"]))
     skin.status("Authors", str(result["total_authors"]))
     skin.status("Collections", str(result["total_collections"]))
+    skin.status("Projects", str(result.get("total_projects", 0)))
     skin.status("Tags", str(result["total_tags"]))
     skin.status("DB size", f"{result['db_size_kb']} KB")
     skin.status("Location", result["db_path"])

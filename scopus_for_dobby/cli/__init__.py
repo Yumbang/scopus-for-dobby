@@ -44,6 +44,7 @@ from . import export as _export  # noqa: E402
 from . import fulltext as _fulltext  # noqa: E402
 from . import openalex as _openalex  # noqa: E402
 from . import profile as _profile  # noqa: E402
+from . import project as _project  # noqa: E402
 from . import repl as _repl  # noqa: E402
 from . import search as _search  # noqa: E402
 from . import serve as _serve  # noqa: E402
@@ -53,6 +54,7 @@ _auth.register(cli)
 _search.register(cli)
 _db.register(cli)
 _collection.register(cli)
+_project.register(cli)
 _author.register(cli)
 _export.register(cli)
 _fulltext.register(cli)

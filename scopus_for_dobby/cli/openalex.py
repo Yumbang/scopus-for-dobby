@@ -54,11 +54,17 @@ def openalex():
 
 @openalex.command("enrich")
 @click.option("--collection", "-c", default=None, help="Only articles in this collection")
+@click.option(
+    "--project",
+    "-p",
+    default=None,
+    help="Only articles in a project's collections (deduplicated); excludes --collection",
+)
 @click.option("--tag", "-t", default=None, help="Only articles with this tag")
 @click.option("--force", is_flag=True, help="Re-enrich articles that already have OpenAlex data")
 @click.option("--limit", "-n", type=int, default=None, help="Max articles to enrich")
 @handle_error
-def oa_enrich(collection, tag, force, limit):
+def oa_enrich(collection, project, tag, force, limit):
     """Enrich saved articles with OpenAlex data, matched by DOI.
 
     Pulls open-access status + best OA link (often a free PDF), OpenAlex
@@ -68,12 +74,16 @@ def oa_enrich(collection, tag, force, limit):
     Examples:
       scopus-for-dobby openalex enrich
       scopus-for-dobby openalex enrich --collection thesis --force
+      scopus-for-dobby openalex enrich --project thesis
     """
     from scopus_for_dobby.utils.repl_skin import ReplSkin
 
     skin = ReplSkin()
 
-    articles = db_mod.list_articles(tag=tag, collection=collection, limit=_ALL)["articles"]
+    _reject_project_with_collection(project, collection)
+    articles = db_mod.list_articles(tag=tag, collection=collection, limit=_ALL, project=project)[
+        "articles"
+    ]
     no_doi = sum(1 for a in articles if not a.get("doi"))
     candidates = [a for a in articles if a.get("doi") and (force or not a.get("openalex_id"))]
     if limit:
@@ -121,19 +131,29 @@ def oa_enrich(collection, tag, force, limit):
         skin.hint(f"     {no_doi} article(s) skipped (no DOI)")
 
 
-def _resolve_seeds(eids, collection, tag) -> tuple[list[dict], list[str]]:
-    """Resolve a seed batch from EIDs, a collection, or a tag.
+def _reject_project_with_collection(project, collection) -> None:
+    if project and collection:
+        raise click.UsageError("Pass either --project or --collection, not both.")
+
+
+def _resolve_seeds(eids, collection, tag, project=None) -> tuple[list[dict], list[str]]:
+    """Resolve a seed batch from EIDs, a collection, a project, or a tag.
 
     Shared by ``graph`` and ``analyze`` so the two can never disagree about
     what "a batch of papers" means. Returns ``(seeds_with_dois, eids_without)``
     — seeds need a DOI to be matched against OpenAlex.
     """
-    if collection or tag:
-        seeds = db_mod.list_articles(tag=tag, collection=collection, limit=_ALL)["articles"]
+    _reject_project_with_collection(project, collection)
+    if collection or tag or project:
+        seeds = db_mod.list_articles(tag=tag, collection=collection, limit=_ALL, project=project)[
+            "articles"
+        ]
     elif eids:
         seeds = [db_mod.get_article(e) for e in eids]
     else:
-        raise click.UsageError("Provide article EIDs, --collection, or --tag to seed the graph.")
+        raise click.UsageError(
+            "Provide article EIDs, --collection, --project, or --tag to seed the graph."
+        )
 
     no_doi = [s["eid"] for s in seeds if not s.get("doi")]
     seeds = [s for s in seeds if s.get("doi")]
@@ -191,6 +211,9 @@ def _depth_options(func):
 @openalex.command("graph")
 @click.argument("eids", nargs=-1)
 @click.option("--collection", "-c", default=None, help="Seed from all articles in a collection")
+@click.option(
+    "--project", "-p", default=None, help="Seed from a project's collections (deduplicated); excludes --collection"
+)
 @click.option("--tag", "-t", default=None, help="Seed from all articles with a tag")
 @click.option(
     "--direction",
@@ -218,6 +241,7 @@ def _depth_options(func):
 def oa_graph(
     eids,
     collection,
+    project,
     tag,
     direction,
     per_seed_limit,
@@ -238,13 +262,14 @@ def oa_graph(
     \b
     Examples:
       scopus-for-dobby openalex graph --collection thesis -o thesis.graphml
+      scopus-for-dobby openalex graph --project thesis -o thesis.graphml
       scopus-for-dobby openalex graph 2-s2.0-85... -d cited-by -f csv -o cites.csv
     """
     from scopus_for_dobby.utils.repl_skin import ReplSkin
 
     skin = ReplSkin()
 
-    seeds, no_doi = _resolve_seeds(eids, collection, tag)
+    seeds, no_doi = _resolve_seeds(eids, collection, tag, project)
 
     # Resolve format and output path from each other.
     if fmt is None and out_path:
@@ -309,6 +334,9 @@ def oa_graph(
 @openalex.command("analyze")
 @click.argument("eids", nargs=-1)
 @click.option("--collection", "-c", default=None, help="Seed from all articles in a collection")
+@click.option(
+    "--project", "-p", default=None, help="Seed from a project's collections (deduplicated); excludes --collection"
+)
 @click.option("--tag", "-t", default=None, help="Seed from all articles with a tag")
 @click.option(
     "--from-file",
@@ -336,6 +364,7 @@ def oa_graph(
 def oa_analyze(
     eids,
     collection,
+    project,
     tag,
     from_file,
     direction,
@@ -358,6 +387,7 @@ def oa_analyze(
     Examples:
       scopus-for-dobby openalex analyze --collection review
       scopus-for-dobby openalex analyze --collection review --depth 2 --communities
+      scopus-for-dobby openalex analyze --project review
       scopus-for-dobby --json openalex analyze --from-file map.json
       scopus-for-dobby openalex analyze --collection review --depth 3 --dry-run
     """
@@ -366,11 +396,12 @@ def oa_analyze(
 
     skin = ReplSkin()
     no_doi: list[str] = []
+    _reject_project_with_collection(project, collection)
 
     if from_file:
         graph = oa.read_graph(from_file)
     else:
-        seeds, no_doi = _resolve_seeds(eids, collection, tag)
+        seeds, no_doi = _resolve_seeds(eids, collection, tag, project)
         # --dry-run builds depth 1 (needed anyway, and cheap) and then projects
         # rather than pretending to know costs without looking.
         build_depth = 1 if dry_run else depth

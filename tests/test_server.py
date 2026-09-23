@@ -82,6 +82,63 @@ def test_collections(client):
     assert "beta" in names
 
 
+def test_projects(client):
+    client.post("/articles", json={"entries": [_entry("E1"), _entry("E2")]})
+    client.post("/collections/alpha/articles", json={"eids": ["E1", "E2"]})
+    client.post("/collections/beta/articles", json={"eids": ["E2"]})
+
+    r = client.post("/projects", json={"name": "p1"})
+    assert r.json() == {"created": "p1"}
+    assert client.post("/projects", json={"name": "p1"}).status_code == 400
+
+    r = client.post("/projects/p1/collections", json={"collections": ["alpha", "beta"]})
+    assert r.status_code == 200
+    assert r.json()["assigned"] == ["alpha", "beta"]
+    r = client.post("/projects/p1/collections", json={"collections": ["missing"]})
+    assert r.status_code == 400
+    assert "missing" in r.json()["error"]
+
+    p1 = client.get("/projects").json()["projects"]["p1"]
+    assert p1["collections"] == ["alpha", "beta"]
+    assert p1["article_count"] == 2
+    assert client.get("/collections").json()["collections"]["alpha"]["project"] == "p1"
+
+    r = client.get("/articles", params={"project": "p1"})
+    assert r.json()["total_matching"] == 2
+    assert client.get("/articles", params={"project": "nope"}).status_code == 400
+    r = client.get("/articles", params={"project": "p1", "collection": "alpha"})
+    assert r.status_code == 400
+
+    r = client.request("DELETE", "/projects/p1/collections", json={"collections": ["beta"]})
+    assert r.json() == {"project": "p1", "unassigned": ["beta"]}
+
+    r = client.post("/projects/rename", json={"old": "p1", "new": "p2"})
+    assert r.json()["renamed_to"] == "p2"
+
+    r = client.delete("/projects/p2")
+    assert r.json() == {"deleted": "p2", "released": ["alpha"]}
+    assert client.get("/projects").json() == {"projects": {}}
+    assert client.post("/collections", json={"name": "c", "project": "p3"}).status_code == 200
+    assert client.get("/projects").json()["projects"]["p3"]["collections"] == ["c"]
+
+
+def test_project_names_with_url_metacharacters(client, monkeypatch):
+    """Over the daemon, a name is one path segment — ``?``/``#``/``%`` must not
+    truncate it and address a different project."""
+    from scopus_for_dobby.cli import _http
+
+    monkeypatch.setattr(_http, "_client_factory", lambda: client)
+    # TestClient's context manager is already open; hand it back as-is.
+    monkeypatch.setattr(type(client), "__exit__", lambda *a: None, raising=False)
+    client.post("/collections", json={"name": "c"})
+    for name in ("q", "q?x", "h#1", "50%"):
+        client.post("/projects", json={"name": name})
+    assert _http.assign_collections("q?x", ["c"])["project"] == "q?x"
+    assert _http.delete_project("h#1")["deleted"] == "h#1"
+    assert _http.delete_project("50%")["deleted"] == "50%"
+    assert set(client.get("/projects").json()["projects"]) == {"q", "q?x"}
+
+
 def test_tag_and_note(client):
     client.post("/articles", json={"entries": [_entry("E1")]})
     r = client.post("/articles/tag", json={"eids": ["E1"], "tags": ["ml"]})

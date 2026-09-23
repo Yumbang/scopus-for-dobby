@@ -128,9 +128,15 @@ def build_app(idle_timeout: float | None = None):
         query: str | None = None,
         sort: str = "added",
         limit: int = 50,
+        project: str | None = None,
     ):
         return adb.list_articles(
-            tag=tag, collection=collection, query=query, sort=sort, limit=limit
+            tag=tag,
+            collection=collection,
+            query=query,
+            sort=sort,
+            limit=limit,
+            project=project,
         )
 
     @app.get("/articles/lookup")
@@ -201,7 +207,7 @@ def build_app(idle_timeout: float | None = None):
 
     @app.post("/collections")
     def create_collection(body: dict = Body(...)):
-        return adb.create_collection(body["name"])
+        return adb.create_collection(body["name"], project=body.get("project"))
 
     @app.delete("/collections/{name}")
     def delete_collection(name: str):
@@ -222,6 +228,31 @@ def build_app(idle_timeout: float | None = None):
     @app.post("/collections/rename")
     def rename_collection(body: dict = Body(...)):
         return adb.rename_collection(body["old"], body["new"])
+
+    # ── Projects ─────────────────────────────────────────────────────────────
+    @app.get("/projects")
+    def list_projects():
+        return adb.list_projects()
+
+    @app.post("/projects")
+    def create_project(body: dict = Body(...)):
+        return adb.create_project(body["name"])
+
+    @app.post("/projects/rename")
+    def rename_project(body: dict = Body(...)):
+        return adb.rename_project(body["old"], body["new"])
+
+    @app.delete("/projects/{name}")
+    def delete_project(name: str):
+        return adb.delete_project(name)
+
+    @app.post("/projects/{name}/collections")
+    def assign_collections(name: str, body: dict = Body(...)):
+        return adb.assign_collections(name, body.get("collections", []))
+
+    @app.delete("/projects/{name}/collections")
+    def unassign_collections(name: str, body: dict = Body(...)):
+        return adb.unassign_collections(name, body.get("collections", []))
 
     # ── Authors ──────────────────────────────────────────────────────────────
     @app.get("/authors")

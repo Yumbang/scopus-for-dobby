@@ -7,9 +7,9 @@ fingerprint; the test fails with an actionable message instructing the
 developer to update both the fingerprint AND the matching Swift structs
 in ``gui-macos/Sources/Models/`` before merging.
 
-To refresh the fingerprint after an intentional schema change, run the
-helper at the bottom of this file via:
-    pytest tests/test_schema_fingerprint.py --update-fingerprint
+To refresh the fingerprint after an intentional schema change, write the
+"Actual" hash from the failure message into the fixture — the message
+prints the exact ``echo <hash> > <fixture>`` command.
 """
 
 import hashlib

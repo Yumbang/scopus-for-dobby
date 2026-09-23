@@ -235,3 +235,119 @@ class TestExportJson:
         assert data["total_matching"] == 2
         assert data["total_in_db"] == 2
         assert data["truncated"] is True
+
+
+SAMPLE_3 = {
+    **SAMPLE,
+    "dc:title": "Unrelated third paper",
+    "prism:doi": "10.0/cli-3",
+    "eid": "2-s2.0-cli-3",
+    "dc:identifier": "SCOPUS_ID:cli-3",
+}
+
+
+@pytest.fixture
+def project_db(tmp_db):
+    """Project ``thesis`` = collections ``a`` + ``b``; SAMPLE is in both.
+
+    SAMPLE_3 sits in ``outside``, which is not in the project.
+    """
+    db_mod.add_entries([SAMPLE, SAMPLE_2, SAMPLE_3])
+    db_mod.create_collection("a")
+    db_mod.create_collection("b")
+    db_mod.create_collection("outside")
+    db_mod.add_to_collection("a", [SAMPLE["eid"]])
+    db_mod.add_to_collection("b", [SAMPLE["eid"], SAMPLE_2["eid"]])
+    db_mod.add_to_collection("outside", [SAMPLE_3["eid"]])
+    db_mod.assign_collections("thesis", ["a", "b"])
+    return tmp_db
+
+
+class TestProjectSelector:
+    def test_db_list_is_deduplicated_union(self, project_db, runner):
+        result = runner.invoke(root_cli, ["--json", "db", "list", "-p", "thesis"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["total_matching"] == 2
+        assert sorted(a["eid"] for a in data["articles"]) == [SAMPLE["eid"], SAMPLE_2["eid"]]
+
+    def test_db_list_project_ands_with_query(self, project_db, runner):
+        result = runner.invoke(
+            root_cli, ["--json", "db", "list", "--project", "thesis", "-q", "sample 2"]
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert [a["eid"] for a in data["articles"]] == [SAMPLE_2["eid"]]
+
+        # Matches the query, but lives outside the project.
+        result = runner.invoke(root_cli, ["--json", "db", "list", "-p", "thesis", "-q", "third"])
+        assert json.loads(result.output)["total_matching"] == 0
+
+    def test_db_list_rejects_project_with_collection(self, project_db, runner):
+        result = runner.invoke(root_cli, ["db", "list", "-p", "thesis", "-c", "a"])
+        assert result.exit_code != 0
+        assert "not both" in result.output
+
+    def test_db_list_unknown_project(self, project_db, runner):
+        result = runner.invoke(root_cli, ["db", "list", "-p", "nope"])
+        assert result.exit_code != 0
+        assert "Project not found" in result.output
+
+    def test_export_rejects_project_with_collection(self, project_db, runner, tmp_path):
+        out = tmp_path / "refs.bib"
+        result = runner.invoke(
+            root_cli, ["export", "--format", "bibtex", "-p", "thesis", "-c", "a", "-o", str(out)]
+        )
+        assert result.exit_code != 0
+        assert "not both" in result.output
+        assert not out.exists()
+
+    def test_export_project_ignores_working_collection(self, project_db, runner, tmp_path):
+        session_mod.get_session().working_collection = "outside"
+        out = tmp_path / "refs.bib"
+        result = runner.invoke(
+            root_cli, ["export", "--format", "bibtex", "-p", "thesis", "-o", str(out)]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Using working collection" not in result.output
+        text = out.read_text(encoding="utf-8")
+        assert text.count("@") == 2
+        assert "Unrelated third paper" not in text
+
+        out_json = tmp_path / "refs-json.bib"
+        result = runner.invoke(
+            root_cli,
+            ["--json", "export", "--format", "bibtex", "-p", "thesis", "-o", str(out_json)],
+        )
+        data = json.loads(result.output)
+        assert data["exported"] == 2
+        assert data["total_matching"] == 2
+
+    def test_collection_create_into_project(self, tmp_db, runner):
+        result = runner.invoke(root_cli, ["--json", "collection", "create", "c1", "-p", "thesis"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == {
+            "created": "c1",
+            "project": "thesis",
+            "project_created": True,
+        }
+        assert db_mod.list_collections()["collections"]["c1"]["project"] == "thesis"
+
+        result = runner.invoke(root_cli, ["collection", "create", "c2", "--project", "thesis"])
+        assert result.exit_code == 0, result.output
+        assert "in project 'thesis'" in result.output
+
+    def test_collection_list_shows_project(self, project_db, runner):
+        result = runner.invoke(root_cli, ["collection", "list"])
+        assert result.exit_code == 0, result.output
+        lines = {ln.split(":")[0].strip(): ln for ln in result.output.splitlines() if ":" in ln}
+        assert "[thesis]" in lines["a"]
+        assert "[thesis]" in lines["b"]
+        assert "[" not in lines["outside"]
+
+    def test_db_stats_shows_projects(self, project_db, runner):
+        result = runner.invoke(root_cli, ["db", "stats"])
+        assert result.exit_code == 0, result.output
+        assert "Projects" in result.output
+        data = json.loads(runner.invoke(root_cli, ["--json", "db", "stats"]).output)
+        assert data["total_projects"] == 1

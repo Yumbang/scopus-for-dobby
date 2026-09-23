@@ -231,3 +231,35 @@ class TestJsonOutput:
         result = runner.invoke(root_cli, ["--json", "profile", "--top", "1"])
         data = json.loads(result.output)
         assert len(data["profile"]["labels"]) == 1
+
+
+class TestProjectScope:
+    """``-p`` profiles the deduplicated union of a project's collections."""
+
+    @pytest.fixture
+    def project(self, corpus):
+        db_mod.create_collection("a")
+        db_mod.create_collection("b")
+        db_mod.add_to_collection("a", ["e0", "e1"])
+        # e1 sits in both member collections and must be counted once.
+        db_mod.add_to_collection("b", ["e1", "e2"])
+        db_mod.assign_collections("thesis", ["a", "b"])
+        return "thesis"
+
+    def test_json_scope_and_union(self, runner, project):
+        result = runner.invoke(root_cli, ["--json", "profile", "-p", project])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["articles"] == 3
+        assert data["scope"]["project"] == project
+        assert data["scope"]["collection"] is None
+
+    def test_human_names_the_project(self, runner, project):
+        result = runner.invoke(root_cli, ["profile", "--project", project])
+        assert result.exit_code == 0, result.output
+        assert "3 (project 'thesis')" in result.output
+
+    def test_project_and_collection_conflict(self, runner, project):
+        result = runner.invoke(root_cli, ["profile", "-p", project, "-c", "a"])
+        assert result.exit_code != 0
+        assert "not both" in result.output

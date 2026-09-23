@@ -28,13 +28,14 @@ def repl():
         "search": "<query> [--limit N] [--sort FIELD] [--year RANGE]",
         "search-all": "<query> [--max N] — fetch multiple pages",
         "abstract": "<DOI|EID|ID> — get paper details",
-        "fulltext": "<DOI|EID> | -c COLL — Elsevier full text to local cache",
+        "fulltext": "<DOI|EID> | -c COLL | -p PROJ — Elsevier full text to local cache",
         "db": "add | list | remove | tag | untag | note | info | stats",
         "author": "list | info | fetch | coauthors | note",
         "collection": "list | create | delete | add | remove | set | unset | current",
-        "export": "--format xlsx|bibtex|ris [--collection NAME]",
+        "project": "list | create | add | remove | rename | delete — group collections",
+        "export": "--format xlsx|bibtex|ris [-c COLL | -p PROJ]",
         "openalex": "enrich | graph | analyze | email — OA links, citation graphs & analysis",
-        "profile": "[-c COLL] [--terms] — what a set of papers is about",
+        "profile": "[-c COLL | -p PROJ] [--terms] — what a set of papers is about",
         "help": "Show this help",
         "quit": "Exit REPL",
     }
@@ -59,7 +60,10 @@ def repl():
         st = db_mod.stats()
         if st["total_articles"] > 0:
             skin.info(
-                f"Local DB: {st['total_articles']} articles, {st['total_collections']} collections"
+                f"Local DB: {st['total_articles']} articles, "
+                f"{st['total_collections']} collections, "
+                f"{st.get('total_projects', 0)} project"
+                f"{'' if st.get('total_projects', 0) == 1 else 's'}"
             )
     except Exception:
         pass

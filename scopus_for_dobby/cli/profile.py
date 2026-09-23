@@ -49,6 +49,12 @@ def _pct(share: float) -> str:
 @click.command("profile")
 @click.argument("eids", nargs=-1)
 @click.option("--collection", "-c", default=None, help="Profile one collection")
+@click.option(
+    "--project",
+    "-p",
+    default=None,
+    help="Profile every collection in a project (deduplicated); excludes --collection",
+)
 @click.option("--tag", "-t", default=None, help="Profile articles with this tag")
 @click.option(
     "--field",
@@ -63,7 +69,7 @@ def _pct(share: float) -> str:
 @click.option("--terms", is_flag=True, help="Also count title terms (words and bigrams)")
 @click.option("--co-occurrence", is_flag=True, help="Also show label pairs sharing an article")
 @handle_error
-def profile(eids, collection, tag, field, top, terms, co_occurrence):
+def profile(eids, collection, project, tag, field, top, terms, co_occurrence):
     """Profile what a set of saved articles is about.
 
     Counts the curated vocabularies Scopus and OpenAlex already attached to the
@@ -74,9 +80,13 @@ def profile(eids, collection, tag, field, top, terms, co_occurrence):
     Examples:
       scopus-for-dobby profile
       scopus-for-dobby profile --collection thesis --terms
+      scopus-for-dobby profile --project thesis
       scopus-for-dobby profile --tag ml --field topics --co-occurrence
       scopus-for-dobby --json profile --collection thesis
     """
+    if project and collection:
+        raise click.UsageError("Pass either --project or --collection, not both.")
+
     from scopus_for_dobby.utils.repl_skin import ReplSkin
 
     skin = ReplSkin()
@@ -84,12 +94,14 @@ def profile(eids, collection, tag, field, top, terms, co_occurrence):
     if eids:
         articles = [db_mod.get_article(e) for e in eids]
     else:
-        articles = db_mod.list_articles(tag=tag, collection=collection, limit=_ALL)["articles"]
+        articles = db_mod.list_articles(
+            tag=tag, collection=collection, project=project, limit=_ALL
+        )["articles"]
 
     cov = ta.coverage(articles)
     result = {
         "articles": len(articles),
-        "scope": {"collection": collection, "tag": tag, "eids": list(eids)},
+        "scope": {"collection": collection, "project": project, "tag": tag, "eids": list(eids)},
         # Filled in below; declared up front so the JSON shape does not change
         # when the corpus is empty.
         "field": {"requested": field, "chosen": None, "coverage": 0.0, "note": None},
@@ -152,6 +164,7 @@ def _render(skin, result, top):
     skin.section("Corpus Profile")
     scope = result["scope"]
     where = scope["collection"] and f"collection '{scope['collection']}'"
+    where = where or (scope.get("project") and f"project '{scope['project']}'")
     where = where or (scope["tag"] and f"tag '{scope['tag']}'")
     where = where or (scope["eids"] and f"{len(scope['eids'])} named article(s)")
     skin.status("Articles", f"{total}" + (f" ({where})" if where else " (whole library)"))

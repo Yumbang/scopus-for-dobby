@@ -77,6 +77,14 @@ class TestAnalyzeFromFile:
         assert "does not contain" in result.output
         assert "Work A" in result.output
 
+    def test_project_with_collection_rejected_even_from_file(self, runner, graph_file):
+        result = runner.invoke(
+            root_cli,
+            ["openalex", "analyze", "--from-file", str(graph_file), "-p", "r1", "-c", "r1-a"],
+        )
+        assert result.exit_code != 0
+        assert "not both" in result.output
+
     def test_json_structure(self, runner, graph_file):
         result = runner.invoke(
             root_cli, ["--json", "openalex", "analyze", "--from-file", str(graph_file)]
