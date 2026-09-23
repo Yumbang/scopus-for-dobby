@@ -40,6 +40,9 @@ struct Article: Identifiable, Decodable, Hashable {
     /// rows come straight out of ``SELECT * FROM articles`` and have no such
     /// column, so this is nil for every row in a list response.
     let collections: [String]?
+    /// Projects holding this article through one of its collections. Like
+    /// ``collections``, only the single-article endpoint carries it.
+    let projects: [String]?
 
     var id: String { eid }
 
@@ -73,6 +76,7 @@ struct Article: Identifiable, Decodable, Hashable {
         case openalexEnrichedAt = "openalex_enriched_at"
         case fulltextFetchedAt = "fulltext_fetched_at"
         case collections
+        case projects
     }
 
     /// Hand-written rather than synthesized so the five JSON-array columns can
@@ -118,6 +122,7 @@ struct Article: Identifiable, Decodable, Hashable {
         openalexEnrichedAt = try c.decodeIfPresent(String.self, forKey: .openalexEnrichedAt)
         fulltextFetchedAt = try c.decodeIfPresent(String.self, forKey: .fulltextFetchedAt)
         collections = LabelList.labels(in: c, forKey: .collections)
+        projects = LabelList.labels(in: c, forKey: .projects)
     }
 }
 

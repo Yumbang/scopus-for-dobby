@@ -218,6 +218,18 @@ final class ArticleDecodingTests: XCTestCase {
         XCTAssertEqual(article.collections, ["fouling", "to-review"])
     }
 
+    func testProjectsDecodeOnSingleArticlePayload() throws {
+        let json = #"{"eid": "x", "collections": ["r1-a"], "projects": ["r1"]}"#
+        let article = try decoder.decode(Article.self, from: Data(json.utf8))
+
+        XCTAssertEqual(article.projects, ["r1"])
+    }
+
+    func testProjectsAbsentOnListRowsAndOlderDaemons() throws {
+        let article = try decoder.decode(Article.self, from: Data(#"{"eid": "x"}"#.utf8))
+        XCTAssertNil(article.projects)
+    }
+
     // MARK: - derived reads
 
     func testOpenAccessStatusPrefersOpenAlexColourOverScopusFlag() throws {

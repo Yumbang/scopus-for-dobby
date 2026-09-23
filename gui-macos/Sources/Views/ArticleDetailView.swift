@@ -106,6 +106,7 @@ struct ArticleDetailView: View {
                     chipSection("Index keywords", article.indexKeywords)
                     chipSection("Subject areas", article.subjectAreas)
                     chipSection("Affiliations", article.affiliations)
+                    chipSection("Projects", article.projects)
                     chipSection("Collections", article.collections)
                     section("Tags") {
                         tagsEditor(for: article)
@@ -133,17 +134,36 @@ struct ArticleDetailView: View {
     /// collections this paper belongs to instead of repeating "All articles".
     /// With a collection selected, that selection stays — it is true, and it
     /// keeps the header stable as the user arrows down the list.
+    ///
+    /// A project holds nothing directly, so with one selected the header names
+    /// which of *its* collections hold this paper — the part of "where it
+    /// lives" that the selection does not already say. A collection filed
+    /// under a project is shown as "project › collection" wherever it appears.
     private func detailHeader(for article: Article) -> some View {
         let memberships = article.collections ?? []
-        let showMemberships = state.selection == .allArticles && !memberships.isEmpty
-        let icon = showMemberships || state.selection != .allArticles ? "folder.fill" : "tray.full"
+        let crumbs: [String]
+        switch state.selection {
+        case .allArticles:
+            crumbs = memberships.map(crumb)
+        case .collection(let name):
+            crumbs = [crumb(name)]
+        case .project(let name):
+            let members = Set(state.collections(in: name).map(\.name))
+            let holding = memberships.filter(members.contains)
+            crumbs = holding.isEmpty ? [name] : holding.map { "\(name) › \($0)" }
+        }
+        let icon: String
+        switch state.selection {
+        case .allArticles: icon = crumbs.isEmpty ? "tray.full" : "folder.fill"
+        case .collection: icon = "folder.fill"
+        case .project: icon = "rectangle.stack.fill"
+        }
+        let title = crumbs.isEmpty ? state.selection.displayTitle : crumbs.joined(separator: " · ")
         return HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.inkMute)
-            Text(showMemberships
-                 ? memberships.joined(separator: " · ")
-                 : state.selection.displayTitle)
+            Text(title)
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.inkSoft)
                 .lineLimit(1)
@@ -156,6 +176,13 @@ struct ArticleDetailView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Theme.paperEdge).frame(height: 1)
         }
+    }
+
+    /// A collection's name, prefixed with its project when it is filed under one.
+    private func crumb(_ collection: String) -> String {
+        guard let project = state.collections.first(where: { $0.name == collection })?.project
+        else { return collection }
+        return "\(project) › \(collection)"
     }
 
     private func byline(for a: Article) -> some View {

@@ -97,7 +97,7 @@ struct ArticleListView: View {
     private var header: some View {
         HStack(spacing: 10) {
             HStack(spacing: 6) {
-                Image(systemName: state.selection == .allArticles ? "tray.full" : "folder.fill")
+                Image(systemName: scopeSymbol)
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.accentDeep)
                 Text(state.selection.displayTitle)
@@ -167,8 +167,8 @@ struct ArticleListView: View {
                 .foregroundStyle(Theme.ink)
                 .focused($searchFocused)
                 .frame(minWidth: 140, maxWidth: 220)
-            if state.selection != .allArticles, !state.searchQuery.isEmpty {
-                Chip(label: "in \(state.selection.displayTitle)",
+            if let scope = searchScopeLabel, !state.searchQuery.isEmpty {
+                Chip(label: scope,
                      tone: .accent, size: .small)
             }
             if !state.searchQuery.isEmpty {
@@ -191,19 +191,58 @@ struct ArticleListView: View {
         )
     }
 
+    /// Same symbols as the sidebar rows, so the header reads as the row the
+    /// user clicked.
+    private var scopeSymbol: String {
+        switch state.selection {
+        case .allArticles: return "tray.full"
+        case .collection: return "folder.fill"
+        case .project: return "rectangle.stack.fill"
+        }
+    }
+
+    /// The chip beside a live search, naming the scope it is confined to.
+    /// Nil for All articles, where there is nothing narrower to say. A
+    /// project says so, because its name alone could be a collection's.
+    private var searchScopeLabel: String? {
+        switch state.selection {
+        case .allArticles: return nil
+        case .collection(let name): return "in \(name)"
+        case .project(let name): return "in project \(name)"
+        }
+    }
+
+    /// A project holds no articles of its own — only its collections do — so
+    /// its empty state points at filing collections into it, never at
+    /// dragging articles onto it.
+    private var emptyCopy: (icon: String, head: String, sub: String) {
+        switch state.selection {
+        case .allArticles:
+            return ("tray", "Your library is empty.",
+                    "Run a search from the CLI — articles you collect there will appear here.")
+        case .collection:
+            return ("folder", "Nothing in this collection yet.",
+                    "Select articles in another list with ⌘-click, then pick this collection and press Add.")
+        case .project(let name):
+            if state.collections(in: name).isEmpty {
+                return ("rectangle.stack", "No collections in this project yet.",
+                        "Use Choose collections… from the project's context menu to file some under it.")
+            }
+            return ("rectangle.stack", "This project's collections are empty.",
+                    "Add articles to its collections — a project shows every paper they hold.")
+        }
+    }
+
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: state.selection == .allArticles ? "tray" : "folder")
+        let copy = emptyCopy
+        return VStack(spacing: 10) {
+            Image(systemName: copy.icon)
                 .font(.system(size: 28))
                 .foregroundStyle(Theme.inkMute.opacity(0.8))
-            Text(state.selection == .allArticles
-                 ? "Your library is empty."
-                 : "Nothing in this collection yet.")
+            Text(copy.head)
                 .font(.serif(17, weight: .medium))
                 .foregroundStyle(Theme.ink)
-            Text(state.selection == .allArticles
-                 ? "Run a search from the CLI — articles you collect there will appear here."
-                 : "Drag articles here from any list, or use Add to collection from a selection.")
+            Text(copy.sub)
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.inkMute)
                 .multilineTextAlignment(.center)

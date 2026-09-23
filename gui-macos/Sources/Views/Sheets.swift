@@ -4,6 +4,9 @@ import SwiftUI
 /// `NewCollectionSheet` (states.jsx) — eyebrow + serif title + text field +
 /// Cancel/Create footer, on warm-paper background.
 struct NewCollectionSheet: View {
+    /// The project the new collection is filed under, when created from a
+    /// project's menu. Only changes the copy; the caller does the filing.
+    var project: String? = nil
     var onCreate: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -30,7 +33,8 @@ struct NewCollectionSheet: View {
             Text("Name your collection")
                 .font(.serif(18, weight: .medium))
                 .foregroundStyle(Theme.ink)
-            Text("Collections are buckets for articles. An article can live in many. Names can include any language.")
+            Text(project.map { "Filed under the project “\($0)”. An article can live in many collections. Names can include any language." }
+                 ?? "Collections are buckets for articles. An article can live in many. Names can include any language.")
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.inkSoft)
                 .lineSpacing(2)

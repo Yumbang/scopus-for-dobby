@@ -60,12 +60,23 @@ Two layers, used together:
    CREATE TABLE events (
      id BIGINT PRIMARY KEY,
      ts TIMESTAMP,
-     kind VARCHAR,           -- 'article.added', 'collection.created', 'tag.applied', ...
-     entity_type VARCHAR,    -- 'article', 'collection', 'author', 'tag'
+     kind VARCHAR,           -- 'article.added', 'collection.created', 'article.tagged', ...
+     entity_type VARCHAR,    -- 'article', 'collection', 'project', 'author'
      entity_id VARCHAR,
      payload JSON
    );
    ```
+
+   Project kinds (schema v4). A project groups collections one level deep; it has no articles of its own, so no article event names one:
+
+   | kind | entity | payload |
+   |---|---|---|
+   | `project.created` | project | `{}` |
+   | `project.deleted` | project | `{released}` — the collections it held, now ungrouped; no `collection.project_changed` is emitted for them |
+   | `project.renamed` | project (new name) | `{renamed_from, created_at}` |
+   | `collection.project_changed` | collection | `{project, previous}` — either may be `null` (ungrouped) |
+
+   `collection.created` also carries `{project}` when a collection is created straight into one.
 
    Every write path in `article_db.py` inserts a row. The GUI tracks `last_seen_id` and queries `WHERE id > last_seen_id` on each file-watch tick. This gives the GUI **what changed**, not just **that something changed** — enough to drive precise SwiftUI animations ("3 new articles appeared in collection X") and toast notifications.
 
@@ -73,7 +84,9 @@ The events table is also useful to the CLI/REPL itself, so it isn't GUI-only inf
 
 ## CLI changes required
 
-The CLI currently formats output for humans. The GUI needs machine-readable output:
+> **As built:** the GUI never calls the CLI for data. `Sources/HTTP/DaemonClient.swift` talks HTTP to the daemon (`scopus-for-dobby serve`); the only process the app spawns is that daemon, from `DaemonLauncher.swift` (`serve --background`), when the user clicks Launch. `--json` output still exists, for agents rather than the GUI.
+
+The CLI originally formatted output for humans. The GUI needs machine-readable output:
 
 - Add `--json` (or `--format json`) to every command the GUI will call: `search`, `add`, `collection`, `tag`, `author`, `export`.
 - JSON output goes to stdout; human-readable progress/errors go to stderr.
@@ -83,7 +96,7 @@ This is also a quality improvement for agent use of the CLI — agents currently
 
 ## Schema contract between Python and Swift
 
-There is no codegen. The schema surface is small enough that hand-mirrored Swift structs (`Article.swift`, `Collection.swift`, `Event.swift`) are cheaper than a code generator and its build step.
+There is no codegen. The schema surface is small enough that hand-mirrored Swift structs (`Article.swift`, `CollectionInfo.swift`, `ProjectInfo.swift`, `EventModel.swift`, all under `gui-macos/Sources/Models/`) are cheaper than a code generator and its build step.
 
 **Rule:** any change to a column in `core/article_db.py` lands in the same PR as the matching Swift struct change. CI enforces this: `tests/test_schema_fingerprint.py` hashes the `CREATE TABLE` statements and diffs against a checked-in fingerprint.
 
@@ -121,6 +134,7 @@ These are prerequisites in the order they unblock each other. None of them requi
    First end-to-end vertical slice. No write path yet — read-only viewer that updates live as the agent works.
 
 5. **Write path: Swift shells out to `scopus-for-dobby --json` for tag/collection/note edits.**
+   *As built, superseded:* writes go over HTTP to the daemon through `DaemonClient`, the same path as reads.
    Adds human editing on top of the read-only viewer.
 
 6. **Polish: search bar wired to `core/search.py` via CLI, export dialog, keyboard nav, etc.**

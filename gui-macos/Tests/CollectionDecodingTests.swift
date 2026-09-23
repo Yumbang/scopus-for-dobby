@@ -42,6 +42,25 @@ final class CollectionDecodingTests: XCTestCase {
         XCTAssertEqual(resp.collections[0].createdAt, "2026-02-02T00:00:00")
     }
 
+    func testProjectPresentAbsentAndNull() throws {
+        // ``project`` is a v4 field: a string when grouped, null when
+        // ungrouped, and absent entirely on an older daemon. The last two
+        // must both mean "ungrouped", never a decode failure.
+        let json = """
+        {"collections": {
+          "grouped": {"article_count": 1, "created": "", "project": "r1"},
+          "nulled": {"article_count": 1, "created": "", "project": null},
+          "legacy": {"article_count": 1, "created": ""}
+        }}
+        """
+        let resp = try decoder.decode(CollectionsResponse.self, from: Data(json.utf8))
+        let byName = Dictionary(uniqueKeysWithValues: resp.collections.map { ($0.name, $0) })
+
+        XCTAssertEqual(byName["grouped"]?.project, "r1")
+        XCTAssertNil(byName["nulled"]?.project)
+        XCTAssertNil(byName["legacy"]?.project)
+    }
+
     func testMissingCountDefaultsToZero() throws {
         let json = #"{"collections": {"Empty": {"created": "2026-01-01T00:00:00"}}}"#
         let resp = try decoder.decode(CollectionsResponse.self, from: Data(json.utf8))

@@ -133,6 +133,8 @@ struct BatchPanel: View {
                 .buttonStyle(PrimaryButtonStyle())
                 .disabled(actionInFlight || collectionDraft.isEmpty)
             }
+            // Collection selections only: ``selectedCollection`` is nil for a
+            // project, which holds no articles of its own to remove them from.
             if let current = state.selectedCollection {
                 Button {
                     Task { await runCollection(.removeFromCurrent(current)) }

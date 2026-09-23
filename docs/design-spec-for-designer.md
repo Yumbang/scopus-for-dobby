@@ -85,13 +85,21 @@ It is **single-user, local-only**. No login, no cloud sync, no multi-tenant conc
 
 ### Collection
 - A named bucket. `name` is the primary key (yes, the string itself).
-- Has `articleCount` and `created` timestamp.
+- Has `articleCount`, a `created` timestamp, and an optional `project`.
 - Articles can belong to **multiple** collections.
 - Names can be long, multilingual (Korean is common: "수질관리특론"), and include spaces / punctuation.
 
+### Project
+- A named group of collections, **one level deep** — projects do not nest.
+- A collection is in **at most one** project, or in none ("ungrouped").
+- A project holds **no articles of its own**. Selecting it shows the deduplicated union of its collections' articles, so its `articleCount` is usually *less* than the sum of its collections' counts.
+- Consequently articles cannot be added to or removed from a project directly — only to its collections. Filing a collection into a project (or out of it) is the only membership action.
+- Deleting a project keeps its collections; they become ungrouped.
+- The single-article payload lists the `projects` an article reaches through its collections; list rows do not carry it.
+
 ### Sidebar selection
 - "All articles" (always present, top of sidebar)
-- One row per collection, sorted alphabetically
+- Projects first, each expandable to its member collections (indented beneath it), then the ungrouped collections — each list sorted alphabetically. A project row selects the union of its collections.
 - The sidebar is the **filter** for the article list. No tag-based filter yet (design opportunity).
 
 ---
@@ -104,18 +112,23 @@ The skeleton ships with a `NavigationSplitView` three-pane layout. Below is what
 - Standard macOS title bar with traffic-light controls.
 - No toolbar yet. **Design opportunity:** what belongs in a toolbar? (Suggestions: search field, +Article, refresh / daemon-status indicator, view-mode toggle.)
 
-### 4.2 Sidebar (left pane, ~200pt min width)
+### 4.2 Sidebar (left pane, ~220pt min width)
 **Currently:**
-- Section "Library" → "All articles" row (icon: `tray.full`)
-- Section "Collections" → one row per collection with `folder` icon, name, and trailing count
+- Section "Library" → "All articles" row (icon: `tray.full`), counting the whole library.
+- Section "Collections" (header shows the collection count and a `+` menu: *New collection…* / *New project…*) →
+  - one row per project (icon: `rectangle.stack`), with its distinct-article count and a chevron that expands it to show its member collections indented beneath it; an expanded empty project shows "No collections — choose…"
+  - then one row per ungrouped collection (icon: `folder`) with its count
+- A row with a zero count has a muted label, so empty collections and projects read differently from populated ones.
+- Project context menu: *Choose collections…* (a checkbox sheet for bulk filing — checking a collection filed elsewhere moves it), *New collection in project…*, *Rename…* (inline), *Delete…* (confirmation dialog; the collections are kept, ungrouped).
+- Collection context menu: *Rename…* (inline), *Merge into…* (sheet), *Move to project* submenu (ending in *New project…*), *Remove from "project"* when filed, *Delete*.
+- Footer: daemon status dot, port, and app/CLI version line.
 
 **Gaps for you:**
-- No "+" affordance to create a collection
-- No context-menu styling for rename / delete / merge
-- No drop target visualization (we'd like drag-from-list-to-collection — is that feasible / desirable on macOS?)
-- No empty state when zero collections exist
-- No visual distinction between an empty collection and a populated one (besides the count)
+- No drag-and-drop anywhere: articles cannot be dragged onto a collection (adding goes through the multi-select batch panel), and collections cannot be dragged into a project (filing goes through the context menu or the *Choose collections…* sheet). Is drag worth designing for either?
+- No empty state when zero collections exist — the section is just a header with a `0`.
+- Deleting a collection has no confirmation (deleting a project does).
 - No "smart collection" concept (e.g., "Untagged", "Recently added") — should we have these? Mockup welcome.
+- No tag or author section in the sidebar.
 
 ### 4.3 Article list (middle pane, ~360pt min width)
 **Currently:**

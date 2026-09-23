@@ -27,6 +27,12 @@ final class DaemonClientLogicTests: XCTestCase {
         XCTAssertTrue(msg.contains("down for maintenance"))
     }
 
+    func testBadResponseUnwrapsDaemonErrorEnvelope() {
+        let body = #"{"error":"Project already exists: r1","type":"ValueError","status":400}"#
+        let msg = DaemonClient.DaemonError.badResponse(400, body).errorDescription ?? ""
+        XCTAssertEqual(msg, "Daemon returned HTTP 400: Project already exists: r1")
+    }
+
     func testInvalidPortErrorMessage() {
         let msg = DaemonClient.DaemonError.invalidPort.errorDescription ?? ""
         XCTAssertTrue(msg.lowercased().contains("port"))
@@ -78,6 +84,38 @@ final class DaemonClientLogicTests: XCTestCase {
         XCTAssertEqual(topLevelLimit.first, "limit=100")
     }
 
+    func testProjectQueryItemRoundTrips() {
+        // ``articles(project:)`` adds a ``project`` item next to ``limit``;
+        // a name with ``&``/``=``/non-ASCII must survive as one value.
+        var build = URLComponents()
+        build.path = "/articles"
+        build.queryItems = [
+            URLQueryItem(name: "limit", value: "200"),
+            URLQueryItem(name: "project", value: "수처리 r&d=1"),
+        ]
+        let back = URLComponents(string: "http://x" + build.path + "?"
+                                 + (build.percentEncodedQuery ?? ""))
+        let decoded = Dictionary(
+            uniqueKeysWithValues: (back?.queryItems ?? []).map { ($0.name, $0.value) })
+        XCTAssertEqual(decoded["project"], "수처리 r&d=1")
+        XCTAssertEqual(decoded.count, 2)
+    }
+
+    func testUrlPathAllowedEscapesQueryAndFragmentInProjectName() {
+        // A project name is one path segment in ``/projects/{name}``. ``?``
+        // and ``#`` must be escaped or the daemon would see a truncated name
+        // and act on a *different* project (``q?x`` → ``q``). The core
+        // rejects ``/`` in project names, so ``.urlPathAllowed`` letting
+        // ``/`` through cannot split a project segment.
+        for name in ["q?x", "r2#junk", "50%"] {
+            let escaped = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+            XCTAssertNotNil(escaped)
+            XCTAssertFalse(escaped!.contains("?") || escaped!.contains("#"),
+                           "structural character leaked in \(escaped!)")
+            XCTAssertEqual(escaped?.removingPercentEncoding, name)
+        }
+    }
+
     func testBuildPathRoundTripsThroughResolvedComponents() {
         // ``buildPath`` returns ``path + "?" + percentEncodedQuery``; feeding
         // that back through ``URLComponents`` (as ``resolved`` does via
@@ -101,5 +139,18 @@ final class DaemonClientLogicTests: XCTestCase {
             uniqueKeysWithValues: (resolved.queryItems ?? []).map { ($0.name, $0.value) })
         XCTAssertEqual(decoded["limit"], "200")
         XCTAssertEqual(decoded["collection"], "사회 과학")
+    }
+
+    func testBuildPathEscapesPlusForFormDecodingServer() {
+        // The daemon form-decodes queries, reading a bare ``+`` as a space.
+        // Foundation leaves ``+`` unescaped, so ``buildPath`` must do it.
+        let path = DaemonClient.buildPath("/articles", queryItems: [
+            URLQueryItem(name: "project", value: "C++ r&d"),
+        ])
+        XCTAssertFalse(path.contains("+"), path)
+        let query = String(path.split(separator: "?", maxSplits: 1)[1])
+        let formDecoded = query.replacingOccurrences(of: "+", with: " ")
+            .split(separator: "=", maxSplits: 1)[1].removingPercentEncoding
+        XCTAssertEqual(formDecoded, "C++ r&d")
     }
 }

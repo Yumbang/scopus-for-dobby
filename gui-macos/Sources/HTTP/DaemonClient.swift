@@ -21,10 +21,21 @@ final class DaemonClient: ObservableObject {
             case .notRunning:
                 return "scopus-for-dobby daemon is not running. Run `scopus-for-dobby serve` or any CLI subcommand to start it."
             case .badResponse(let status, let body):
-                return "Daemon returned HTTP \(status): \(body)"
+                return "Daemon returned HTTP \(status): \(Self.message(in: body))"
             case .invalidPort:
                 return "daemon.port file is malformed."
             }
+        }
+
+        /// The daemon's own message out of its ``{"error": msg}`` envelope,
+        /// else the body as sent — so a 400 reads "Project already exists: x",
+        /// not a JSON dump.
+        static func message(in body: String) -> String {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any]
+            else { return body }
+            if let e = obj["error"] as? String { return e }
+            if let d = obj["detail"] as? String { return d }
+            return body
         }
     }
 
@@ -84,10 +95,20 @@ final class DaemonClient: ObservableObject {
     /// for "how big is this collection". Dropping them here is what made the
     /// sidebar and list header report the length of the currently-loaded
     /// array instead.
-    func articles(collection: String? = nil, limit: Int = 200) async throws -> ArticleListResponse {
+    ///
+    /// ``project`` selects the deduplicated union of that project's
+    /// collections; the daemon rejects it combined with ``collection``.
+    func articles(collection: String? = nil, project: String? = nil,
+                  limit: Int = 200) async throws -> ArticleListResponse {
         var items = [URLQueryItem(name: "limit", value: "\(limit)")]
         if let collection { items.append(URLQueryItem(name: "collection", value: collection)) }
+        if let project { items.append(URLQueryItem(name: "project", value: project)) }
         return try await get(buildPath("/articles", queryItems: items))
+    }
+
+    func projects() async throws -> [ProjectInfo] {
+        let resp: ProjectsResponse = try await get("/projects")
+        return resp.projects
     }
 
     func article(eid: String) async throws -> Article {
@@ -122,11 +143,20 @@ final class DaemonClient: ObservableObject {
     /// Build a path + querystring tuple suitable for ``get()`` from a path and
     /// query items. Centralizes the URLComponents → ``percentEncodedQuery``
     /// dance so callers can't accidentally re-introduce string-interpolation.
-    private func buildPath(_ path: String, queryItems: [URLQueryItem]) -> String {
+    ///
+    /// ``URLComponents`` leaves ``+`` bare in a query value, but the daemon
+    /// form-decodes it as a space — a project "C++" arrived as "C  " and
+    /// matched nothing. Escape it explicitly.
+    nonisolated static func buildPath(_ path: String, queryItems: [URLQueryItem]) -> String {
         var c = URLComponents()
         c.path = path
         c.queryItems = queryItems
-        return c.path + "?" + (c.percentEncodedQuery ?? "")
+        let query = (c.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B")
+        return c.path + "?" + query
+    }
+
+    private func buildPath(_ path: String, queryItems: [URLQueryItem]) -> String {
+        Self.buildPath(path, queryItems: queryItems)
     }
 
     // MARK: - mutations
@@ -143,8 +173,10 @@ final class DaemonClient: ObservableObject {
         try await mutate("POST", path: "/articles/\(pathEscaped(eid))/note", body: ["note": note])
     }
 
-    func createCollection(name: String) async throws {
-        try await mutate("POST", path: "/collections", body: ["name": name])
+    func createCollection(name: String, project: String? = nil) async throws {
+        var body: [String: Any] = ["name": name]
+        if let project { body["project"] = project }
+        try await mutate("POST", path: "/collections", body: body)
     }
 
     func deleteCollection(name: String) async throws {
@@ -165,6 +197,34 @@ final class DaemonClient: ObservableObject {
 
     func removeFromCollection(name: String, eids: [String]) async throws {
         try await mutate("DELETE", path: "/collections/\(pathEscaped(name))/articles", body: ["eids": eids])
+    }
+
+    // MARK: - projects
+
+    func createProject(name: String) async throws {
+        try await mutate("POST", path: "/projects", body: ["name": name])
+    }
+
+    /// Deletes the project only; its collections are kept, ungrouped.
+    func deleteProject(name: String) async throws {
+        try await mutate("DELETE", path: "/projects/\(pathEscaped(name))", body: nil)
+    }
+
+    func renameProject(old: String, new: String) async throws {
+        try await mutate("POST", path: "/projects/rename", body: ["old": old, "new": new])
+    }
+
+    /// All-or-nothing on the daemon: an unknown collection fails the whole
+    /// call. Creates the project if missing; moves collections out of any
+    /// other project.
+    func assignCollections(project: String, names: [String]) async throws {
+        try await mutate("POST", path: "/projects/\(pathEscaped(project))/collections",
+                         body: ["collections": names])
+    }
+
+    func unassignCollections(project: String, names: [String]) async throws {
+        try await mutate("DELETE", path: "/projects/\(pathEscaped(project))/collections",
+                         body: ["collections": names])
     }
 
     // MARK: - private

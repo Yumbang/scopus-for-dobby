@@ -31,11 +31,23 @@ enum SortAxis: String, CaseIterable, Identifiable {
 enum SidebarSelection: Hashable {
     case allArticles
     case collection(String)
+    /// A project: the deduplicated union of its member collections.
+    case project(String)
 
+    /// Only a *collection* selection; nil for a project. Anything that
+    /// mutates membership ("remove from current collection") keys off this,
+    /// and a project has no membership of its own to remove from.
     var collectionName: String? {
         switch self {
-        case .allArticles: return nil
+        case .allArticles, .project: return nil
         case .collection(let name): return name
+        }
+    }
+
+    var projectName: String? {
+        switch self {
+        case .allArticles, .collection: return nil
+        case .project(let name): return name
         }
     }
 
@@ -43,6 +55,7 @@ enum SidebarSelection: Hashable {
         switch self {
         case .allArticles: return "All articles"
         case .collection(let name): return name
+        case .project(let name): return name
         }
     }
 }
@@ -53,6 +66,8 @@ final class AppState: ObservableObject {
     /// Version the daemon reports on /health. nil until it answers once.
     @Published var daemonVersion: String?
     @Published var collections: [CollectionInfo] = []
+    /// Projects, sorted by name. Each lists its member collection names.
+    @Published var projects: [ProjectInfo] = []
     @Published var articles: [Article] = []
     @Published var selection: SidebarSelection = .allArticles
     @Published var selectedArticleEid: String? = nil
@@ -95,6 +110,17 @@ final class AppState: ObservableObject {
     @Published var isSearching: Bool = false
 
     var selectedCollection: String? { selection.collectionName }
+    var selectedProject: String? { selection.projectName }
+
+    /// Collections filed under no project, in sidebar (name) order.
+    var ungroupedCollections: [CollectionInfo] {
+        collections.filter { $0.project == nil }
+    }
+
+    /// A project's member collections, in sidebar (name) order.
+    func collections(in project: String) -> [CollectionInfo] {
+        collections.filter { $0.project == project }
+    }
 
     /// True when the list is showing search hits rather than the full scope.
     var isSearchActive: Bool {
@@ -111,6 +137,9 @@ final class AppState: ObservableObject {
             return libraryTotal
         case .collection(let name):
             return collections.first { $0.name == name }?.articleCount ?? scopeTotal
+        case .project(let name):
+            // Distinct across member collections — not the sum of their counts.
+            return projects.first { $0.name == name }?.articleCount ?? scopeTotal
         }
     }
 
@@ -174,19 +203,51 @@ final class AppState: ObservableObject {
     /// is stale and the user should know.
     func reloadAll() async {
         async let colsTask = DaemonClient.shared.collections()
+        async let projTask = DaemonClient.shared.projects()
         async let artsTask = articlesForCurrentSelection()
 
         var firstError: Error? = nil
+        var projectsFresh = false
         do {
             self.collections = try await colsTask
         } catch {
             firstError = firstError ?? error
         }
         do {
-            apply(page: try await artsTask)
+            self.projects = try await projTask
+            projectsFresh = true
+        } catch DaemonClient.DaemonError.badResponse(404, _) {
+            // A daemon from before projects has no /projects. That is "no
+            // projects", not a failure — collections still show, ungrouped,
+            // and an error here would re-raise on every reload.
+            self.projects = []
+            projectsFresh = true
         } catch {
             firstError = firstError ?? error
         }
+        var articlesError: Error? = nil
+        do {
+            apply(page: try await artsTask)
+        } catch {
+            articlesError = error
+        }
+        // A selected project deleted or renamed elsewhere (the CLI) makes
+        // ``/articles?project=`` a 400 on every reload, with the list frozen
+        // on stale rows. A vanished collection just reads as empty; a
+        // vanished project falls back to All articles.
+        if projectsFresh, let name = selectedProject,
+           !projects.contains(where: { $0.name == name }) {
+            selection = .allArticles
+            multiSelection.removeAll()
+            multiSelectAnchor = nil
+            do {
+                apply(page: try await articlesForCurrentSelection())
+                articlesError = nil
+            } catch {
+                articlesError = error
+            }
+        }
+        if let articlesError { firstError = firstError ?? articlesError }
         if let err = firstError {
             self.lastError = err.localizedDescription
         } else {
@@ -239,18 +300,22 @@ final class AppState: ObservableObject {
             // larger should move to true server-side pagination — see plan
             // §scale.
             let resp = try await DaemonClient.shared.articles(collection: selectedCollection,
+                                                              project: selectedProject,
                                                               limit: 200_000)
             return ArticlePage(articles: resp.articles,
                                libraryTotal: resp.totalInDb,
                                scopeTotal: resp.totalMatching)
         }
         let hits = try await DaemonClient.shared.searchFTS(query: q, limit: 1000)
-        guard let coll = selectedCollection else {
+        guard selectedCollection != nil || selectedProject != nil else {
             // ``/search/fts`` reports only its own hit count — nothing about
             // the library or the scope. Leave both totals as they were.
             return ArticlePage(articles: hits.articles, libraryTotal: nil, scopeTotal: nil)
         }
-        let scope = try await DaemonClient.shared.articles(collection: coll, limit: 200_000)
+        // FTS has no scope filter, so intersect the hits with the scope's rows.
+        let scope = try await DaemonClient.shared.articles(collection: selectedCollection,
+                                                           project: selectedProject,
+                                                           limit: 200_000)
         let allowed = Set(scope.articles.map(\.eid))
         return ArticlePage(articles: hits.articles.filter { allowed.contains($0.eid) },
                            libraryTotal: scope.totalInDb,
@@ -416,11 +481,11 @@ final class AppState: ObservableObject {
         catch { self.lastError = error.localizedDescription }
     }
 
-    func createCollection(_ name: String) async {
+    func createCollection(_ name: String, inProject project: String? = nil) async {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         do {
-            try await DaemonClient.shared.createCollection(name: trimmed)
+            try await DaemonClient.shared.createCollection(name: trimmed, project: project)
             await reloadAll()
         } catch {
             self.lastError = error.localizedDescription
@@ -464,6 +529,107 @@ final class AppState: ObservableObject {
             await reloadAll()
         } catch {
             self.lastError = error.localizedDescription
+        }
+    }
+
+    // MARK: - Projects
+
+    /// Create an empty project. Filing collections into it is a separate step
+    /// (``assignCollections``), which also creates a missing project.
+    func createProject(_ name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try await DaemonClient.shared.createProject(name: trimmed)
+            await reloadAll()
+        } catch {
+            self.lastError = error.localizedDescription
+        }
+    }
+
+    /// Rename a project; a selection on it follows the new name.
+    func renameProject(_ old: String, to new: String) async {
+        let trimmed = new.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed != old else { return }
+        do {
+            try await DaemonClient.shared.renameProject(old: old, new: trimmed)
+            if selection == .project(old) {
+                selection = .project(trimmed)
+            }
+            await reloadAll()
+        } catch {
+            self.lastError = error.localizedDescription
+        }
+    }
+
+    /// Delete a project. Its collections are kept and reappear ungrouped.
+    func deleteProject(_ name: String) async {
+        do {
+            try await DaemonClient.shared.deleteProject(name: name)
+            if selection == .project(name) {
+                selection = .allArticles
+            }
+            await reloadAll()
+        } catch {
+            self.lastError = error.localizedDescription
+        }
+    }
+
+    /// File ``names`` under ``project`` (created if missing), moving them out
+    /// of any other project. All-or-nothing on the daemon. Returns true on
+    /// success so a sheet can decide whether to close.
+    @discardableResult
+    func assignCollections(_ names: [String], to project: String) async -> Bool {
+        let trimmed = project.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !names.isEmpty else { return false }
+        do {
+            try await DaemonClient.shared.assignCollections(project: trimmed, names: names)
+            await reloadAll()
+            return true
+        } catch {
+            self.lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Take ``names`` out of ``project``; they are kept, ungrouped.
+    @discardableResult
+    func unassignCollections(_ names: [String], from project: String) async -> Bool {
+        guard !names.isEmpty else { return false }
+        do {
+            try await DaemonClient.shared.unassignCollections(project: project, names: names)
+            await reloadAll()
+            return true
+        } catch {
+            self.lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// The bulk-sorting sheet's Apply: make ``project``'s membership exactly
+    /// ``members``. Assigns the newly checked, then unassigns the unchecked,
+    /// so the project (and a newly checked collection's move out of another
+    /// project) exists before anything is released.
+    @discardableResult
+    func setProjectMembers(_ project: String, to members: Set<String>) async -> Bool {
+        let current = Set(collections(in: project).map(\.name))
+        let toAdd = members.subtracting(current).sorted()
+        let toRemove = current.subtracting(members).sorted()
+        do {
+            if !toAdd.isEmpty {
+                try await DaemonClient.shared.assignCollections(project: project, names: toAdd)
+            }
+            if !toRemove.isEmpty {
+                try await DaemonClient.shared.unassignCollections(project: project, names: toRemove)
+            }
+            await reloadAll()
+            return true
+        } catch {
+            // Reload first: a clean reload clears ``lastError``, which would
+            // otherwise wipe this message the moment it was set.
+            await reloadAll()
+            self.lastError = error.localizedDescription
+            return false
         }
     }
 

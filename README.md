@@ -129,6 +129,8 @@ Because the skill is packaged with the code, upgrading the CLI and re-running
 | `author` | `coauthors` / `note` | Co-author network and notes |
 | `collection` | `create` / `delete` | Manage named collections |
 | `collection` | `add` / `remove` | Add/remove articles from collections |
+| `project` | `create` / `delete` / `rename` / `list` | Manage projects — named groups of collections, one level deep |
+| `project` | `add` / `remove` | File collections into a project (`--match 'glob'` for bulk) or take them out |
 | `openalex` | `key` / `email` | Set the free OpenAlex API key (~10x the anonymous daily budget) and polite-pool email |
 | `openalex` | `enrich` | Add open-access links, OA status, and OpenAlex citation counts |
 | `openalex` | `graph` | Build citation graphs (`--depth 1..3`) → GraphML / Gephi CSV / node-link JSON |
@@ -137,6 +139,19 @@ Because the skill is packaged with the code, upgrading the CLI and re-running
 | `export` | | Export to XLSX, BibTeX, or RIS |
 | `skill` | `install` / `uninstall` / `status` / `list` / `path` | Manage the bundled agent skills (see [Use with an AI agent](#use-with-an-ai-agent)) |
 | `serve` | | Run the local HTTP daemon (for the macOS GUI / multi-process access) |
+
+### Projects and `-p`
+
+A project groups collections; it holds no articles itself, and a collection
+belongs to at most one. `-p NAME` on `db list`, `export`, `profile`, `fulltext`
+and `openalex enrich` / `graph` / `analyze` selects the deduplicated union of the
+project's collections. It excludes `-c` and combines with `-t` / `-q`.
+
+```bash
+scopus-for-dobby project add thesis --match 'thesis-*' --dry-run
+scopus-for-dobby db list -p thesis
+scopus-for-dobby export -p thesis --format bibtex -o thesis.bib
+```
 
 ### `fulltext` — the article body, not the abstract
 
@@ -238,7 +253,7 @@ that owns the only DuckDB connection. Start it when you want the macOS GUI, or
 two clients at once (e.g. an agent session alongside an open REPL) — without it,
 a second concurrent process hits DuckDB's file lock. Stop it by killing the PID
 at `~/.scopus-for-dobby/daemon.pid`. The macOS GUI launches it on its own.
-Endpoints (auto-docs at `/docs`): `/articles`, `/collections`, `/search/fts`,
+Endpoints (auto-docs at `/docs`): `/articles`, `/collections`, `/projects`, `/search/fts`,
 `/events`, `/events/stream` (SSE), `/health`, `/stats`.
 
 ## Access Tiers
