@@ -417,7 +417,14 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The command toggles: run it again to close the pane (the person can also close it from the
+  // engine's close mark or ctrl+x x). Closing keeps the picks and the scope in the session.
   on('command.run', { command: 'scopus-mod' }, async $ => {
+    if ((await $.ui.panes()).some(pane => pane.id === PANE)) {
+      await $.ui.close({ id: PANE })
+
+      return { text: 'Papers pane closed.' }
+    }
     await $.ui.open({ id: PANE, title: 'Papers' })
     // A refresh that fails (the session ended mid-load) has nobody to tell: the pane shows the error.
     void refresh($).catch(() => {})

@@ -270,20 +270,34 @@ test('copy DOIs copies the picked papers\' DOIs, one per line, skipping papers w
   await ui.unmount()
 })
 
-test('/scopus-mod opens the pane', async ($, on) => {
-  const opened: string[] = []
+test('/scopus-mod opens the pane, and running it again closes it', async ($, on) => {
+  let isUp = false
+  const log: string[] = []
   on('ui.open', (_$: any, e: any) => {
-    opened.push(String(e.id))
+    isUp = true
+    log.push(`open ${e.id}`)
     return { value: { isPlaced: true } }
   })
+  on('ui.close', (_$: any, e: any) => {
+    isUp = false
+    log.push(`close ${e.id}`)
+    return { value: undefined }
+  })
+  on('ui.panes', () => ({
+    value: isUp ? [{ id: 'papers', title: 'Papers', isShown: true, isFocused: false, isPlaced: true }] : [],
+  }))
   on('env.get', () => ({ value: '/home/test' }))
   on('fs.read', () => ({ value: '8767' }))
   on('http.fetch', () => ({
     value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ projects: {}, collections: {}, articles: [], total_matching: 0 }) },
   }))
-  const out = await $.command.run({ command: 'scopus-mod' })
-  expect(out.text).toMatch(/pane opened/)
-  expect(opened).toEqual(['papers'])
+  const first = await $.command.run({ command: 'scopus-mod' })
+  expect(first.text).toMatch(/pane opened/)
+  const second = await $.command.run({ command: 'scopus-mod' })
+  expect(second.text).toMatch(/pane closed/)
+  const third = await $.command.run({ command: 'scopus-mod' })
+  expect(third.text).toMatch(/pane opened/)
+  expect(log).toEqual(['open papers', 'close papers', 'open papers'])
 })
 
 // Fakes the daemon: two papers listed, `exportReply` answering POST /export/ris. Hooks must be

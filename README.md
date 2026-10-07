@@ -129,7 +129,7 @@ uv tool install --reinstall --editable ".[gui]"   # the daemon lives in the gui 
 scopus-for-dobby serve --background
 ```
 
-Then type `/scopus-mod`.
+Then type `/scopus-mod`; type it again to close the pane (or `ctrl+x` then `x`, or the pane's close mark). Closing keeps your picks and scope for the rest of the session.
 
 - **Scope** is a tree: each project, unfolding to its collections, then the
   ungrouped collections. It stays as you left it until you fold it.
