@@ -115,7 +115,7 @@ is separate from the skills above: the skills teach an agent the *CLI*; the mod
 gives *you* a pane and the agent a few tools over the same state.
 
 ```text
-/plugin install scopus-papers --marketplace Yumbang/scopus-for-dobby
+/plugin install scopus-mod-for-dobby --marketplace Yumbang/scopus-for-dobby
 ```
 
 Answer `y` to add the marketplace, then pick a scope (user scope loads it in every
@@ -151,7 +151,7 @@ replace or clear picks by EID) — so "these papers" means what is on your scree
 and you can watch it move.
 
 **What it does and does not do.** Mods run unsandboxed with your user's
-privileges, so read it before you install it (`mods/scopus-papers/hooks/register.tsx`,
+privileges, so read it before you install it (`mods/scopus-mod-for-dobby/hooks/register.tsx`,
 one file). It only talks to `127.0.0.1` on the daemon's port, only with `GET`, and
 never writes to the library: the picks live in the Claude Code session. It starts
 no processes and reads one file, `~/.scopus-for-dobby/daemon.port`, which it
@@ -162,8 +162,8 @@ handed to the model; the tools' results also say it is untrusted data. The daemo
 itself has no authentication, as before. This was built for the terminal; other
 Claude Code surfaces are untested.
 
-From a checkout, or to hack on it: `claude --plugin-dir ./mods/scopus-papers`, and
-`claude plugin test mods/scopus-papers` runs its tests. It reads the daemon's
+From a checkout, or to hack on it: `claude --plugin-dir ./mods/scopus-mod-for-dobby`, and
+`claude plugin test mods/scopus-mod-for-dobby` runs its tests. It reads the daemon's
 `/articles`, `/projects` and `/collections` responses, so a change to those shapes
 must keep it working.
 

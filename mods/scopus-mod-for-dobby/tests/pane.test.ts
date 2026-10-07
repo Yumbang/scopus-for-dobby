@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
-const SELECT = 'mcp__scopus-papers__papers_select'
-const SCOPE = 'mcp__scopus-papers__papers_scope'
-const STATE = 'mcp__scopus-papers__papers_state'
+const SELECT = 'mcp__scopus-mod-for-dobby__papers_select'
+const SCOPE = 'mcp__scopus-mod-for-dobby__papers_scope'
+const STATE = 'mcp__scopus-mod-for-dobby__papers_state'
 
 const call = async ($: any, tool: string, input: Record<string, unknown>) =>
   $.tool.call({ tool, ...input })
@@ -36,7 +36,7 @@ test('papers_scope refuses conflicting or unknown scopes', async $ => {
 test('the pane draws search, scope and actions on each surface that takes input', async $ => {
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
-      plugin: 'scopus-papers',
+      plugin: 'scopus-mod-for-dobby',
       surface,
       component: 'Pane',
       requestId: 'papers',
@@ -84,7 +84,7 @@ test('papers unfold to abstract and keywords, with a more/less toggle for long a
   await call($, SCOPE, { all: true })
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
-      plugin: 'scopus-papers',
+      plugin: 'scopus-mod-for-dobby',
       surface,
       component: 'Pane',
       requestId: 'papers',
@@ -121,7 +121,7 @@ test('the scope tree stays open after a pick and folds only on its toggle', asyn
   })
   await call($, SCOPE, { all: true })
   const ui = await $.ui.mount({
-    plugin: 'scopus-papers',
+    plugin: 'scopus-mod-for-dobby',
     surface: 'terminal',
     component: 'Pane',
     requestId: 'papers',
@@ -160,7 +160,7 @@ test('only the paper list scrolls: the pane fits its rows and the list moves by 
   })
   await call($, SCOPE, { all: true })
   const ui = await $.ui.mount({
-    plugin: 'scopus-papers',
+    plugin: 'scopus-mod-for-dobby',
     surface: 'terminal',
     component: 'Pane',
     requestId: 'papers',
@@ -243,7 +243,7 @@ test('copy DOIs copies the picked papers\' DOIs, one per line, skipping papers w
   await call($, SCOPE, { all: true })
   await call($, SELECT, { action: 'add', eids: ['2-s2.0-1', '2-s2.0-2', '2-s2.0-3'] })
   const ui = await $.ui.mount({
-    plugin: 'scopus-papers', surface: 'terminal', component: 'Pane', requestId: 'papers',
+    plugin: 'scopus-mod-for-dobby', surface: 'terminal', component: 'Pane', requestId: 'papers',
     props: { title: 'Papers', isFocused: true, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 36 } },
     viewport: { columns: 80, rows: 40 },
   } as any)

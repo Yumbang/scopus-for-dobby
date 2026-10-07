@@ -38,6 +38,6 @@ export type Tree = { isOpen: boolean; expanded: string[]; top: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'scopus-papers': { view: View; picked: Paper[]; catalog: Catalog; tree: Tree; open: Open; details: Record<string, Detail> }
+    'scopus-mod-for-dobby': { view: View; picked: Paper[]; catalog: Catalog; tree: Tree; open: Open; details: Record<string, Detail> }
   }
 }

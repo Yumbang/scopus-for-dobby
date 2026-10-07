@@ -97,4 +97,4 @@ The daemon *server* (`fastapi`, `uvicorn`) lives in the optional `[gui]` extra; 
 
 ### The `/papers` Claude Code mod
 
-`mods/scopus-papers/` is a Claude Code mod (marketplace file at `.claude-plugin/marketplace.json`) that reads the daemon's `GET /articles`, `/articles/{eid}`, `/projects` and `/collections` over loopback. It is read-only and starts no processes; keep it that way. Changing those response shapes (`all_authors`, `abstract`, `keywords`, `index_keywords`, `total_matching`, the project/collection dicts) breaks the pane, so check `claude plugin test mods/scopus-papers` and update it in the same commit.
+`mods/scopus-mod-for-dobby/` is a Claude Code mod (marketplace file at `.claude-plugin/marketplace.json`) that reads the daemon's `GET /articles`, `/articles/{eid}`, `/projects` and `/collections` over loopback. It is read-only and starts no processes; keep it that way. Changing those response shapes (`all_authors`, `abstract`, `keywords`, `index_keywords`, `total_matching`, the project/collection dicts) breaks the pane, so check `claude plugin test mods/scopus-mod-for-dobby` and update it in the same commit.

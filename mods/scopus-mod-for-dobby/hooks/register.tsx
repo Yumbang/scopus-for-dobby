@@ -32,12 +32,12 @@ const EMPTY_CATALOG: Catalog = { projects: [], collections: [] }
 const EMPTY_TREE: Tree = { isOpen: true, expanded: [], top: 0 }
 const EMPTY_OPEN: Open = { expanded: [], full: [] }
 
-const viewRef = { plugin: 'scopus-papers', key: 'view' } as const
-const pickedRef = { plugin: 'scopus-papers', key: 'picked' } as const
-const catalogRef = { plugin: 'scopus-papers', key: 'catalog' } as const
-const treeRef = { plugin: 'scopus-papers', key: 'tree' } as const
-const openRef = { plugin: 'scopus-papers', key: 'open' } as const
-const detailsRef = { plugin: 'scopus-papers', key: 'details' } as const
+const viewRef = { plugin: 'scopus-mod-for-dobby', key: 'view' } as const
+const pickedRef = { plugin: 'scopus-mod-for-dobby', key: 'picked' } as const
+const catalogRef = { plugin: 'scopus-mod-for-dobby', key: 'catalog' } as const
+const treeRef = { plugin: 'scopus-mod-for-dobby', key: 'tree' } as const
+const openRef = { plugin: 'scopus-mod-for-dobby', key: 'open' } as const
+const detailsRef = { plugin: 'scopus-mod-for-dobby', key: 'details' } as const
 const viewAtom = atom(viewRef, EMPTY_VIEW)
 const pickedAtom = atom(pickedRef, [] as Paper[])
 const catalogAtom = atom(catalogRef, EMPTY_CATALOG)
@@ -362,15 +362,15 @@ export const register: Register = on => {
     return { text: 'Papers pane opened.' }
   })
 
-  on('tool.call', { tool: 'mcp__scopus-papers__papers_state' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__scopus-mod-for-dobby__papers_state' }, async ($, e) => {
     const v = await getView($)
 
     return { result: JSON.stringify(snapshot(v, await getPicked($), limitOf(e.limit))) }
   }).catch(($, e, next) =>
-    next.called ? next(e) : { deny: 'scopus-papers: the tool failed; is the daemon running?' },
+    next.called ? next(e) : { deny: 'scopus-mod-for-dobby: the tool failed; is the daemon running?' },
   )
 
-  on('tool.call', { tool: 'mcp__scopus-papers__papers_scope' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__scopus-mod-for-dobby__papers_scope' }, async ($, e) => {
     const catalog = await loadCatalog($)
     const project = typeof e.project === 'string' ? e.project : undefined
     const collection = typeof e.collection === 'string' ? e.collection : undefined
@@ -398,10 +398,10 @@ export const register: Register = on => {
 
     return { result: JSON.stringify(snapshot(v, await getPicked($), limitOf(e.limit))) }
   }).catch(($, e, next) =>
-    next.called ? next(e) : { deny: 'scopus-papers: the tool failed; is the daemon running?' },
+    next.called ? next(e) : { deny: 'scopus-mod-for-dobby: the tool failed; is the daemon running?' },
   )
 
-  on('tool.call', { tool: 'mcp__scopus-papers__papers_select' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__scopus-mod-for-dobby__papers_select' }, async ($, e) => {
     const action = e.action
     if (action !== 'add' && action !== 'remove' && action !== 'replace' && action !== 'clear') {
       return { deny: 'action must be add, remove, replace or clear.' }
@@ -429,7 +429,7 @@ export const register: Register = on => {
 
     return { result: JSON.stringify({ picked: picked.map(brief), not_found: notFound, notice: DATA_NOTICE }) }
   }).catch(($, e, next) =>
-    next.called ? next(e) : { deny: 'scopus-papers: the tool failed; is the daemon running?' },
+    next.called ? next(e) : { deny: 'scopus-mod-for-dobby: the tool failed; is the daemon running?' },
   )
 
   // The wheel and trackpad. The pane never overflows (the list is windowed by hand), so the

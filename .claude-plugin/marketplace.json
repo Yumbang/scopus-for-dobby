@@ -6,8 +6,8 @@
   },
   "plugins": [
     {
-      "name": "scopus-papers",
-      "source": "./mods/scopus-papers",
+      "name": "scopus-mod-for-dobby",
+      "source": "./mods/scopus-mod-for-dobby",
       "description": "A /papers side pane for browsing the scopus-for-dobby library and attaching papers to the chat, with tools the agent can use to steer the same scope and selection."
     }
   ]
