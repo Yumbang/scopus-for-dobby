@@ -237,3 +237,42 @@ def test_health_reports_the_daemon_version(client):
     body = client.get("/health").json()
     assert body["version"] == __version__
     assert body["status"] == "ok"
+
+
+def test_export_ris_returns_text_for_the_given_eids(client):
+    client.post("/articles", json={"entries": [_entry("E1"), _entry("E2")]})
+    r = client.post("/export/ris", json={"eids": ["E2", "E1", "E2", "GONE"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["format"] == "ris"
+    assert body["exported"] == 2  # E2 listed twice, exported once
+    assert body["missing"] == ["GONE"]
+    assert body["text"].count("TY  - ") == 2
+    assert body["text"].count("ER  - ") == 2
+    assert "\r\n" in body["text"]  # RIS mandates CRLF
+    assert "AN  - E2" in body["text"]
+    # the order asked for is the order delivered
+    assert body["text"].index("AN  - E2") < body["text"].index("AN  - E1")
+
+
+def test_export_ris_matches_the_file_the_cli_writes(client, tmp_path):
+    from scopus_for_dobby.core import export as export_mod
+
+    client.post("/articles", json={"entries": [_entry("E1")]})
+    text = client.post("/export/ris", json={"eids": ["E1"]}).json()["text"]
+    out = tmp_path / "x.ris"
+    export_mod.export_ris([client.get("/articles/E1").json()], str(out))
+    assert text == out.read_bytes().decode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"eids": []}, {"eids": "E1"}, {"eids": [1]}, {"eids": ["E"] * 1001}],
+)
+def test_export_ris_rejects_bad_requests(client, body):
+    assert client.post("/export/ris", json=body).status_code == 400
+
+
+def test_export_ris_with_only_unknown_eids_is_empty_not_an_error(client):
+    body = client.post("/export/ris", json={"eids": ["GONE"]}).json()
+    assert body["exported"] == 0 and body["missing"] == ["GONE"] and body["text"] == ""

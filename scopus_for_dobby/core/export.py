@@ -330,15 +330,11 @@ def _ris_tag(lines: list[str], name: str, value) -> None:
         lines.append(f"{name}  - {v}")
 
 
-def export_ris(articles: list[dict], output_path: str) -> dict:
-    """Export articles to RIS format (compatible with EndNote, Zotero, Mendeley).
+def ris_text(articles: list[dict]) -> str:
+    """Render articles as RIS text (CRLF line endings, as the format requires).
 
-    Args:
-        articles: List of article dicts (DB format).
-        output_path: Output .ris file path.
-
-    Returns:
-        Export summary.
+    The one place RIS records are built: ``export_ris`` writes this to a file and
+    the daemon's ``/export/ris`` route returns it, so the two cannot drift.
     """
     ris_entries = []
 
@@ -406,10 +402,23 @@ def export_ris(articles: list[dict], output_path: str) -> dict:
 
         ris_entries.append("\r\n".join(lines))
 
-    # RIS mandates CRLF line endings; newline="" keeps Python from translating
-    # them, so the file is correct on every platform (notably EndNote/Windows).
+    return "\r\n\r\n".join(ris_entries) + "\r\n"
+
+
+def export_ris(articles: list[dict], output_path: str) -> dict:
+    """Export articles to RIS format (compatible with EndNote, Zotero, Mendeley).
+
+    Args:
+        articles: List of article dicts (DB format).
+        output_path: Output .ris file path.
+
+    Returns:
+        Export summary.
+    """
+    # newline="" keeps Python from translating the CRLFs RIS mandates, so the
+    # file is correct on every platform (notably EndNote/Windows).
     with open(output_path, "w", encoding="utf-8", newline="") as f:
-        f.write("\r\n\r\n".join(ris_entries) + "\r\n")
+        f.write(ris_text(articles))
 
     return {
         "exported": len(articles),

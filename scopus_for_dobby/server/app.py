@@ -153,6 +153,41 @@ def build_app(idle_timeout: float | None = None):
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
 
+    # Largest batch one export call takes: the same ceiling the GUI and CLI use for
+    # "everything", and far past any hand-picked selection.
+    _EXPORT_MAX = 1000
+
+    @app.post("/export/ris")
+    def export_ris(body: dict = Body(...)):
+        """RIS text for the given EIDs (EndNote, Zotero and Mendeley all import it).
+
+        Returns the text rather than writing a file: the caller decides where it
+        goes, and a daemon on another machine could not write there anyway.
+        Unknown EIDs are listed in ``missing``, not an error, so one stale pick
+        does not sink the rest.
+        """
+        from scopus_for_dobby.core import export as export_mod
+
+        eids = body.get("eids")
+        if not isinstance(eids, list) or not eids or not all(isinstance(e, str) for e in eids):
+            raise HTTPException(status_code=400, detail="eids must be a non-empty list of strings")
+        if len(eids) > _EXPORT_MAX:
+            raise HTTPException(
+                status_code=400, detail=f"At most {_EXPORT_MAX} eids per export, got {len(eids)}"
+            )
+        articles, missing = [], []
+        for eid in dict.fromkeys(eids):  # in order, each once
+            try:
+                articles.append(adb.get_article(eid))
+            except ValueError:
+                missing.append(eid)
+        return {
+            "format": "ris",
+            "exported": len(articles),
+            "missing": missing,
+            "text": export_mod.ris_text(articles) if articles else "",
+        }
+
     @app.post("/articles/fulltext")
     def record_fulltext(body: dict = Body(...)):
         return adb.record_fulltext_fetch(body.get("eid", ""), roles=body.get("roles"))
