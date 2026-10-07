@@ -4,6 +4,8 @@ export type Paper = {
   /** Up to three surnames, then "et al." */
   authors: string
   year: string
+  /** Bare DOI such as 10.1088/1367-2630/15/11/113063, or empty. */
+  doi: string
   journal: string
   cited: number
 }

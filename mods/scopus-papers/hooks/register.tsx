@@ -114,11 +114,16 @@ const keywordsOf = (a: Json): string[] => {
   return [...new Set([...own, ...index].map(k => clean(k, 80)).filter(Boolean))].slice(0, 40)
 }
 
+// A bare DOI: the library may hold it as a doi.org URL.
+const doiOf = (raw: unknown): string =>
+  clean(raw, 120).replace(/^(https?:\/\/)?(dx\.)?doi\.org\//i, '').replace(/^doi:\s*/i, '')
+
 const toPaper = (a: Json): Paper => ({
   eid: String(a.eid),
   title: clean(a.title, 300) || '(untitled)',
   authors: authorsOf(a),
   year: String(a.cover_date ?? '').slice(0, 4),
+  doi: doiOf(a.doi),
   journal: clean(a.journal, 160),
   cited: Number(a.cited_by ?? 0),
 })
@@ -216,7 +221,8 @@ async function toggleOpen($: Api, eid: string): Promise<void> {
 const toggle = (list: Paper[], p: Paper): Paper[] =>
   list.some(x => x.eid === p.eid) ? list.filter(x => x.eid !== p.eid) : [...list, p]
 
-const paperLine = (p: Paper): string => `- ${p.eid} · ${p.authors} ${p.year} · "${p.title}"`
+const paperLine = (p: Paper): string =>
+  `- ${p.eid} · ${p.authors} ${p.year}${p.doi ? ` · DOI ${p.doi}` : ''} · "${p.title}"`
 
 const pickedText = (picked: Paper[]): string =>
   `Papers selected in the library pane (${picked.length}):\n${picked.map(paperLine).join('\n')}\n`
@@ -229,6 +235,15 @@ async function attach($: Api, text: string): Promise<void> {
   $.ui.toast(filled.isFilled ? 'Attached to the prompt.' : 'Could not fill the prompt: a dialog is open.')
 }
 
+// `[x] Kim, Lee · 2024 [DOI: 10.1/x]`: the authors give way first when the line is too long.
+function headLine(p: Paper, isPicked: boolean, room: number): string {
+  const doi = p.doi ? ` [DOI: ${p.doi}]` : ''
+  const lead = ` ${isPicked ? '[x]' : '[ ]'} `
+  const tail = ` · ${p.year}${doi}`
+  const authors = clip(p.authors, Math.max(10, room - lead.length - tail.length))
+  return clip(`${lead}${authors}${tail}`, room)
+}
+
 const clip = (text: string, width: number): string =>
   text.length <= width ? text : `${text.slice(0, Math.max(1, width - 1))}…`
 
@@ -237,6 +252,7 @@ const brief = (p: Paper) => ({
   title: p.title,
   authors: p.authors,
   year: p.year,
+  doi: p.doi ?? '',
   journal: p.journal,
   cited_by: p.cited,
 })
@@ -638,7 +654,7 @@ export const register: Register = on => {
                       plain
                       onPress={() => void update($, pickedAtom, list => toggle(list, p))}
                     >
-                      {clip(` ${isPicked(p) ? '[x]' : '[ ]'} ${p.authors} · ${p.year}`, inner - 6)}
+                      {headLine(p, isPicked(p), inner - 6)}
                     </Button>
                   </Box>
                   <Box paddingLeft={4}>
@@ -713,6 +729,29 @@ export const register: Register = on => {
             </Button>
             <Button key="attach-scope" hotkey="s" onPress={async () => attach($, scopeText(await getView($)))}>
               attach scope
+            </Button>
+            <Button
+              key="copy-dois"
+              hotkey="y"
+              onPress={async press => {
+                const list = await getPicked($)
+                const dois = list.map(x => x.doi).filter(Boolean)
+                if (list.length === 0) {
+                  $.ui.toast('Nothing picked yet.')
+                } else if (dois.length === 0) {
+                  $.ui.toast('None of the picked papers has a DOI.')
+                } else {
+                  const done = await $.ui.copy({ text: dois.join('\n'), surface: press.surface })
+                  const skipped = list.length - dois.length
+                  $.ui.toast(
+                    done.isCopied
+                      ? `Copied ${dois.length} DOI${dois.length === 1 ? '' : 's'}${skipped > 0 ? ` (${skipped} without one)` : ''}.`
+                      : `Could not copy: ${done.reason}.`,
+                  )
+                }
+              }}
+            >
+              copy DOIs
             </Button>
             <Button key="clear" hotkey="c" onPress={() => void update($, pickedAtom, () => [])}>
               clear

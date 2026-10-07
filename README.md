@@ -134,14 +134,15 @@ Then type `/papers`.
 - **Scope** is a tree: each project, unfolding to its collections, then the
   ungrouped collections. It stays as you left it until you fold it.
 - **Search** floats in its own box above the list (`Enter` to search).
-- **Papers** are cards with authors and year, then the title. `▸` unfolds a card to
+- **Papers** are cards with authors, year and DOI (`Kim, Lee · 2024 [DOI: 10.1000/x]`), then the title. `▸` unfolds a card to
   about three lines of abstract (`… more` for all of it), keywords, journal and
   citations. `[ ]` / `[x]` picks it; a picked card's frame turns green.
 - **Scrolling** moves the list only: the mouse wheel or trackpad, `▲ ▼`
   (`k` / `j`), or `‹ prev` / `next ›` (`p` / `n`). The scope and search stay put.
 - **`attach`** (`a`) inserts the picked papers at the prompt cursor as editable
-  lines (`- <EID> · authors year · "title"`); **`attach scope`** (`s`) inserts the
-  current scope and its count instead; **`clear`** (`c`) drops the picks.
+  lines (`- <EID> · authors year · DOI … · "title"`); **`attach scope`** (`s`) inserts
+  the current scope and its count instead; **`copy DOIs`** (`y`) puts the picked
+  papers' DOIs on the clipboard, one per line; **`clear`** (`c`) drops the picks.
 
 The agent gets three tools over the same state — `papers_state` (what you are
 looking at and have picked), `papers_scope` (switch to a project, collection or

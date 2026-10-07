@@ -60,6 +60,7 @@ test('papers unfold to abstract and keywords, with a more/less toggle for long a
     title: `Title ${n}`,
     first_author: 'Kim J.',
     all_authors: [{ name: 'Kim J.' }, { name: 'De Lozzo M.' }, { name: 'Park S.' }, { name: 'Choi H.' }],
+    doi: n === 1 ? 'https://doi.org/10.1000/xyz.1' : '',
     cover_date: '2024-05-01',
     journal: 'J. Tests',
     cited_by: 3,
@@ -90,7 +91,9 @@ test('papers unfold to abstract and keywords, with a more/less toggle for long a
       props: { title: 'Papers', isFocused: true, bodyColumns: 60, placement: 'dock' },
       viewport: { columns: 80, rows: 40 },
     } as any)
-    expect(await ui.find({ key: 'row:2-s2.0-1' })).toBeDefined()
+    expect(await ui.find({ key: 'row:2-s2.0-1', text: /Kim.* · 2024 \[DOI: 10\.1000\/xyz\.1\]/ })).toBeDefined()
+    expect(await ui.find({ key: 'row:2-s2.0-2', text: /DOI/ })).toBeUndefined()
+    expect(await ui.find({ key: 'copy-dois' })).toBeDefined()
     expect(await ui.find({ key: 'more:2-s2.0-1' })).toBeUndefined()
     await ui.press({ key: 'open:2-s2.0-1' })
     expect(await ui.find({ type: 'Text', text: /Keywords: membranes · fouling/ })).toBeDefined()
@@ -217,4 +220,34 @@ test('text from the library is stripped of control characters and capped', async
   expect(paper.title.length).toBeLessThanOrEqual(300)
   expect(paper.journal).toBe('J. Tests')
   expect(out.notice).toMatch(/untrusted/)
+})
+
+test('copy DOIs copies the picked papers\' DOIs, one per line, skipping papers without one', async ($, on) => {
+  const art = (n: number) => ({
+    eid: `2-s2.0-${n}`, title: `T${n}`, first_author: 'Kim J.', all_authors: [{ name: 'Kim J.' }],
+    doi: n === 2 ? '' : `10.1000/p${n}`, cover_date: '2024-01-01', journal: 'J', cited_by: 0,
+  })
+  const copied: string[] = []
+  on('env.get', () => ({ value: '/home/test' }))
+  on('fs.read', () => ({ value: '8767' }))
+  on('http.fetch', (_$: any, e: any) => {
+    const body = String(e.url).includes('/articles?')
+      ? { articles: [art(1), art(2), art(3)], total_matching: 3 }
+      : { projects: {}, collections: {} }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  on('ui.copy', (_$: any, e: any) => {
+    copied.push(String(e.text))
+    return { value: { isCopied: true } }
+  })
+  await call($, SCOPE, { all: true })
+  await call($, SELECT, { action: 'add', eids: ['2-s2.0-1', '2-s2.0-2', '2-s2.0-3'] })
+  const ui = await $.ui.mount({
+    plugin: 'scopus-papers', surface: 'terminal', component: 'Pane', requestId: 'papers',
+    props: { title: 'Papers', isFocused: true, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 36 } },
+    viewport: { columns: 80, rows: 40 },
+  } as any)
+  await ui.press({ key: 'copy-dois' })
+  expect(copied).toEqual(['10.1000/p1\n10.1000/p3'])
+  await ui.unmount()
 })
