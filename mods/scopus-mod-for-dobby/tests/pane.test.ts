@@ -285,3 +285,93 @@ test('/scopus-mod opens the pane', async ($, on) => {
   expect(out.text).toMatch(/pane opened/)
   expect(opened).toEqual(['papers'])
 })
+
+// Fakes the daemon: two papers listed, `exportReply` answering POST /export/ris. Hooks must be
+// registered before the test first touches `$`, so this only registers; the test then loads the list.
+function fakeDaemon(on: any, exportReply: (body: string) => unknown) {
+  const art = (n: number) => ({
+    eid: `2-s2.0-${n}`, title: `T${n}`, first_author: 'Kim J.', all_authors: [{ name: 'Kim J.' }],
+    doi: `10.1000/p${n}`, cover_date: '2024-01-01', journal: 'J', cited_by: 0,
+  })
+  const ok = (body: unknown) => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } })
+  const posts: string[] = []
+  on('env.get', () => ({ value: '/home/test' }))
+  on('fs.read', () => ({ value: '8767' }))
+  on('http.fetch', (_$: any, e: any) => {
+    const url = String(e.url)
+    if (url.endsWith('/export/ris')) {
+      posts.push(String(e.init?.body))
+      return exportReply(String(e.init?.body))
+    }
+    return ok(url.includes('/articles?')
+      ? { articles: [art(1), art(2)], total_matching: 2 }
+      : { status: 'ok', projects: {}, collections: {} })
+  })
+  return { posts, ok }
+}
+const mountPane = ($: any) =>
+  $.ui.mount({
+    plugin: 'scopus-mod-for-dobby', surface: 'terminal', component: 'Pane', requestId: 'papers',
+    props: { title: 'Papers', isFocused: true, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 } },
+    viewport: { columns: 80, rows: 40 },
+  } as any)
+const risReply = (exported: number, text: string) => ({
+  value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ format: 'ris', exported, missing: [], text }) },
+})
+
+test('export .ris posts the picked EIDs and writes the returned text to ~/Downloads', async ($, on) => {
+  const written: { path: string; text: string }[] = []
+  const ris = 'TY  - JOUR\r\nER  - \r\n'
+  const { posts } = fakeDaemon(on, () => risReply(2, ris))
+  on('fs.write', (_$: any, e: any) => {
+    written.push({ path: String(e.path), text: String(e.text) })
+    return { value: undefined }
+  })
+  await call($, SCOPE, { all: true })
+  await call($, SELECT, { action: 'add', eids: ['2-s2.0-1', '2-s2.0-2'] })
+  const ui = await mountPane($)
+  expect(await ui.find({ key: 'export-ris' })).toBeDefined()
+  await ui.press({ key: 'export-ris' })
+  expect(posts.length).toBe(1)
+  expect(JSON.parse(posts[0])).toEqual({ eids: ['2-s2.0-1', '2-s2.0-2'] })
+  expect(written.length).toBe(1)
+  expect(written[0].path).toMatch(/^\/home\/test\/Downloads\/scopus_export_\d{8}_\d{6}\.ris$/)
+  expect(written[0].text).toBe(ris)
+  await ui.unmount()
+})
+
+test('export .ris falls back to the session folder when Downloads cannot be written', async ($, on) => {
+  const tried: string[] = []
+  fakeDaemon(on, () => risReply(1, 'x'))
+  on('fs.write', (_$: any, e: any) => {
+    tried.push(String(e.path))
+    return String(e.path).startsWith('/home/test/Downloads/') ? { deny: 'no such folder' } : { value: undefined }
+  })
+  await call($, SCOPE, { all: true })
+  await call($, SELECT, { action: 'add', eids: ['2-s2.0-1'] })
+  const ui = await mountPane($)
+  await ui.press({ key: 'export-ris' })
+  expect(tried.length).toBe(2)
+  expect(tried[1]).toMatch(/scopus_export_\d{8}_\d{6}\.ris$/)
+  await ui.unmount()
+})
+
+test('export .ris with nothing picked, or an old daemon, writes nothing', async ($, on) => {
+  const written: string[] = []
+  const { posts } = fakeDaemon(on, () => ({
+    value: { status: 404, ok: false, headers: {}, text: '{"detail":"Not Found"}' },
+  }))
+  on('fs.write', (_$: any, e: any) => {
+    written.push(String(e.path))
+    return { value: undefined }
+  })
+  await call($, SCOPE, { all: true })
+  const ui = await mountPane($)
+  await ui.press({ key: 'export-ris' }) // nothing picked yet
+  expect(posts.length).toBe(0)
+  await call($, SELECT, { action: 'add', eids: ['2-s2.0-1'] })
+  await ui.press({ key: 'export-ris' }) // daemon answers 404: it predates /export/ris
+  expect(posts.length).toBe(1)
+  expect(written).toEqual([])
+  await ui.unmount()
+})

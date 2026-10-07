@@ -68,7 +68,7 @@ const getPicked = async ($: Api): Promise<Paper[]> => (await $.state.get(pickedR
 const getCatalog = async ($: Api): Promise<Catalog> =>
   (await $.state.get(catalogRef)).value ?? EMPTY_CATALOG
 
-async function api($: Api, path: string): Promise<Json> {
+async function api($: Api, path: string, init?: { method: string; body: string }): Promise<Json> {
   let base: string
   try {
     const home = await $.env.get('HOME')
@@ -81,7 +81,7 @@ async function api($: Api, path: string): Promise<Json> {
   }
   let res
   try {
-    res = await $.http.fetch(base + path)
+    res = await $.http.fetch(base + path, init && { ...init, headers: { 'content-type': 'application/json' } })
   } catch {
     throw new Error(DOWN)
   }
@@ -240,6 +240,57 @@ const pickedText = (picked: Paper[]): string =>
 
 const scopeText = (v: View): string =>
   `Library scope: ${scopeLabel(v.scope)}${v.query ? ` matching "${v.query}"` : ''} (${v.total} papers)\n`
+
+// Writes the picked papers as an .ris file (EndNote, Zotero and Mendeley all import RIS). The
+// daemon renders the text with the same code `scopus-for-dobby export --format ris` uses; this
+// only chooses where it lands: ~/Downloads, or the session's folder if that cannot be written.
+async function exportRis($: Api): Promise<void> {
+  const list = await getPicked($)
+  if (list.length === 0) {
+    $.ui.toast('Nothing picked yet.')
+    return
+  }
+  let result: Json
+  try {
+    result = await api($, '/export/ris', { method: 'POST', body: JSON.stringify({ eids: list.map(p => p.eid) }) })
+  } catch (err) {
+    const why = message(err)
+    $.ui.toast(
+      /answered 40[45]/.test(why)
+        ? 'This daemon is too old to export: update scopus-for-dobby, then restart it (scopus-for-dobby serve --background).'
+        : why,
+    )
+    return
+  }
+  const exported = Number(result.exported ?? 0)
+  const missing: unknown[] = Array.isArray(result.missing) ? result.missing : []
+  if (exported === 0) {
+    $.ui.toast('None of the picked papers is in the library any more.')
+    return
+  }
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+  const name = `scopus_export_${stamp}.ris`
+  const home = (await $.env.get('HOME')) ?? ''
+  const attempts = home ? [`${home}/Downloads/${name}`, name] : [name]
+  let where = ''
+  for (const target of attempts) {
+    try {
+      await $.fs.write(target, String(result.text))
+      where = target
+      break
+    } catch {
+      // try the next place
+    }
+  }
+  if (where === '') {
+    $.ui.toast('Could not write the .ris file (no writable Downloads folder or session folder).')
+    return
+  }
+  const shown = home && where.startsWith(`${home}/`) ? `~${where.slice(home.length)}` : where
+  $.ui.toast(
+    `Exported ${exported} paper${exported === 1 ? '' : 's'} to ${shown}${missing.length > 0 ? ` (${missing.length} no longer in the library)` : ''}. Import the .ris in EndNote or Zotero.`,
+  )
+}
 
 async function attach($: Api, text: string): Promise<void> {
   const filled = await $.prompt.fill({ text, mode: 'insert' })
@@ -569,8 +620,8 @@ export const register: Register = on => {
     const treeLines = tree.isOpen ? (isTreeWindowed ? treeCap : nodes.length) : 0
 
     // Fixed lines around the list: the scope section (frame 2 + header 1 + tree) and
-    // the Papers section (frame 2 + title 1 + search 3 + status, nav, picks, actions 4).
-    const listRows = Math.max(4, bodyRows - (3 + treeLines) - 10)
+    // the Papers section (frame 2 + title 1 + search 3 + status, nav, picks, two action rows 5).
+    const listRows = Math.max(4, bodyRows - (3 + treeLines) - 11)
     const top = Math.min(v.top, Math.max(0, v.papers.length - 1))
     let used = 0
     let count = 0
@@ -772,6 +823,12 @@ export const register: Register = on => {
             <Button key="clear" hotkey="c" onPress={() => void update($, pickedAtom, () => [])}>
               clear
             </Button>
+          </Box>
+          <Box>
+            <Button key="export-ris" hotkey="e" onPress={() => void exportRis($)}>
+              export .ris
+            </Button>
+            <Text dimColor> EndNote · Zotero</Text>
           </Box>
         </Box>
       </Box>

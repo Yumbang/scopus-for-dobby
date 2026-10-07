@@ -143,6 +143,12 @@ Then type `/scopus-mod`.
   lines (`- <EID> · authors year · DOI … · "title"`); **`attach scope`** (`s`) inserts
   the current scope and its count instead; **`copy DOIs`** (`y`) puts the picked
   papers' DOIs on the clipboard, one per line; **`clear`** (`c`) drops the picks.
+- **`export .ris`** (`e`) writes the picked papers to
+  `~/Downloads/scopus_export_<date>_<time>.ris` and says where. RIS is the format
+  EndNote, Zotero and Mendeley all import (EndNote: *File → Import*, filter
+  *Reference Manager (RIS)*; Zotero: *File → Import*). It is rendered by the daemon
+  with the same code as `scopus-for-dobby export --format ris`, so the two files are
+  identical; it needs a daemon from this version or newer.
 
 The agent gets three tools over the same state — `papers_state` (what you are
 looking at and have picked), `papers_scope` (switch to a project, collection or
@@ -152,10 +158,13 @@ and you can watch it move.
 
 **What it does and does not do.** Mods run unsandboxed with your user's
 privileges, so read it before you install it (`mods/scopus-mod-for-dobby/hooks/register.tsx`,
-one file). It only talks to `127.0.0.1` on the daemon's port, only with `GET`, and
-never writes to the library: the picks live in the Claude Code session. It starts
-no processes and reads one file, `~/.scopus-for-dobby/daemon.port`, which it
-accepts only if it is a bare port number. Titles, abstracts and keywords are text
+one file). It only talks to `127.0.0.1` on the daemon's port: `GET`s to read, and
+one `POST` that asks the daemon to render RIS text for the papers you picked. It
+never writes to the library — the picks live in the Claude Code session — and the
+one file it ever writes is the `.ris` you ask for with `export .ris`, in
+`~/Downloads` (or the session's folder if that is not writable). It starts no
+processes and reads one file, `~/.scopus-for-dobby/daemon.port`, which it accepts
+only if it is a bare port number. Titles, abstracts and keywords are text
 a publisher wrote, so control characters and bidirectional overrides are stripped
 and every field is length-capped before it is drawn, inserted into your prompt or
 handed to the model; the tools' results also say it is untrusted data. The daemon
@@ -315,6 +324,7 @@ two clients at once (e.g. an agent session alongside an open REPL) — without i
 a second concurrent process hits DuckDB's file lock. Stop it by killing the PID
 at `~/.scopus-for-dobby/daemon.pid`. The macOS GUI launches it on its own.
 Endpoints (auto-docs at `/docs`): `/articles`, `/collections`, `/projects`, `/search/fts`,
+`/export/ris` (RIS text for a list of EIDs; the `/scopus-mod` pane's export button uses it),
 `/events`, `/events/stream` (SSE), `/health`, `/stats`.
 
 ## Access Tiers
