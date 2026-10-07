@@ -311,7 +311,7 @@ const countNodes = (catalog: Catalog, tree: Tree): number => {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'papers',
+      name: 'scopus-mod',
       description: 'Browse the paper library in a side pane and attach papers to the chat',
     })
     await $.tool.register({
@@ -355,9 +355,10 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'papers' }, async $ => {
+  on('command.run', { command: 'scopus-mod' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Papers' })
-    void refresh($)
+    // A refresh that fails (the session ended mid-load) has nobody to tell: the pane shows the error.
+    void refresh($).catch(() => {})
 
     return { text: 'Papers pane opened.' }
   })

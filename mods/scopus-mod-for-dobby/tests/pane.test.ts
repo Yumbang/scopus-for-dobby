@@ -251,3 +251,19 @@ test('copy DOIs copies the picked papers\' DOIs, one per line, skipping papers w
   expect(copied).toEqual(['10.1000/p1\n10.1000/p3'])
   await ui.unmount()
 })
+
+test('/scopus-mod opens the pane', async ($, on) => {
+  const opened: string[] = []
+  on('ui.open', (_$: any, e: any) => {
+    opened.push(String(e.id))
+    return { value: { isPlaced: true } }
+  })
+  on('env.get', () => ({ value: '/home/test' }))
+  on('fs.read', () => ({ value: '8767' }))
+  on('http.fetch', () => ({
+    value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ projects: {}, collections: {}, articles: [], total_matching: 0 }) },
+  }))
+  const out = await $.command.run({ command: 'scopus-mod' })
+  expect(out.text).toMatch(/pane opened/)
+  expect(opened).toEqual(['papers'])
+})

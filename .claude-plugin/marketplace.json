@@ -8,7 +8,7 @@
     {
       "name": "scopus-mod-for-dobby",
       "source": "./mods/scopus-mod-for-dobby",
-      "description": "A /papers side pane for browsing the scopus-for-dobby library and attaching papers to the chat, with tools the agent can use to steer the same scope and selection."
+      "description": "A /scopus-mod side pane for browsing the scopus-for-dobby library and attaching papers to the chat, with tools the agent can use to steer the same scope and selection."
     }
   ]
 }

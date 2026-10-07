@@ -106,7 +106,7 @@ disturbs the rest of the file.
 Because the skill is packaged with the code, upgrading the CLI and re-running
 `skill install` keeps the two in step — they can't drift.
 
-### Claude Code mod: the `/papers` pane
+### Claude Code mod: the `/scopus-mod` pane
 
 A [Claude Code mod](https://code.claude.com/docs) that puts your library in a side
 pane next to the conversation, so you can browse and pick papers with a mouse or
@@ -129,7 +129,7 @@ uv tool install --reinstall --editable ".[gui]"   # the daemon lives in the gui 
 scopus-for-dobby serve --background
 ```
 
-Then type `/papers`.
+Then type `/scopus-mod`.
 
 - **Scope** is a tree: each project, unfolding to its collections, then the
   ungrouped collections. It stays as you left it until you fold it.

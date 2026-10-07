@@ -95,6 +95,6 @@ Subcommands never import `core/article_db` directly — they go through `cli/_cl
 
 The daemon *server* (`fastapi`, `uvicorn`) lives in the optional `[gui]` extra; the client (`httpx`) is core, so a bare install can attach to a daemon it cannot itself start. This amends ADR-7, which had every CLI invocation lazy-spawn a daemon. Any function reachable via `db_mod.<name>` must be listed in `_client._API` and implemented by **both** backends.
 
-### The `/papers` Claude Code mod
+### The `/scopus-mod` Claude Code mod
 
 `mods/scopus-mod-for-dobby/` is a Claude Code mod (marketplace file at `.claude-plugin/marketplace.json`) that reads the daemon's `GET /articles`, `/articles/{eid}`, `/projects` and `/collections` over loopback. It is read-only and starts no processes; keep it that way. Changing those response shapes (`all_authors`, `abstract`, `keywords`, `index_keywords`, `total_matching`, the project/collection dicts) breaks the pane, so check `claude plugin test mods/scopus-mod-for-dobby` and update it in the same commit.
