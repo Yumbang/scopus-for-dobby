@@ -1,0 +1,14 @@
+{
+  "name": "scopus-for-dobby",
+  "description": "Claude Code mods for the scopus-for-dobby paper library.",
+  "owner": {
+    "name": "Yumbang"
+  },
+  "plugins": [
+    {
+      "name": "scopus-papers",
+      "source": "./mods/scopus-papers",
+      "description": "A /papers side pane for browsing the scopus-for-dobby library and attaching papers to the chat, with tools the agent can use to steer the same scope and selection."
+    }
+  ]
+}

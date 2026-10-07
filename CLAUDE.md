@@ -94,3 +94,7 @@ Subcommands never import `core/article_db` directly — they go through `cli/_cl
 - **daemon** (`cli/_http.py`) — chosen only when `~/.scopus-for-dobby/daemon.{pid,port}` point at a live process, because DuckDB allows a single read/write process per file and the daemon holds it.
 
 The daemon *server* (`fastapi`, `uvicorn`) lives in the optional `[gui]` extra; the client (`httpx`) is core, so a bare install can attach to a daemon it cannot itself start. This amends ADR-7, which had every CLI invocation lazy-spawn a daemon. Any function reachable via `db_mod.<name>` must be listed in `_client._API` and implemented by **both** backends.
+
+### The `/papers` Claude Code mod
+
+`mods/scopus-papers/` is a Claude Code mod (marketplace file at `.claude-plugin/marketplace.json`) that reads the daemon's `GET /articles`, `/articles/{eid}`, `/projects` and `/collections` over loopback. It is read-only and starts no processes; keep it that way. Changing those response shapes (`all_authors`, `abstract`, `keywords`, `index_keywords`, `total_matching`, the project/collection dicts) breaks the pane, so check `claude plugin test mods/scopus-papers` and update it in the same commit.

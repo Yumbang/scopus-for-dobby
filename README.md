@@ -106,6 +106,66 @@ disturbs the rest of the file.
 Because the skill is packaged with the code, upgrading the CLI and re-running
 `skill install` keeps the two in step — they can't drift.
 
+### Claude Code mod: the `/papers` pane
+
+A [Claude Code mod](https://code.claude.com/docs) that puts your library in a side
+pane next to the conversation, so you can browse and pick papers with a mouse or
+keys and attach them to the prompt, and so the agent can steer the same view. It
+is separate from the skills above: the skills teach an agent the *CLI*; the mod
+gives *you* a pane and the agent a few tools over the same state.
+
+```text
+/plugin install scopus-papers --marketplace Yumbang/scopus-for-dobby
+```
+
+Answer `y` to add the marketplace, then pick a scope (user scope loads it in every
+session). It needs a Claude Code build with mods (written against 2.1.290; the
+mod API is marked early access and may change) and the **daemon**, because the
+pane reads the library over its local HTTP API instead of starting a CLI process
+per click:
+
+```bash
+uv tool install --reinstall --editable ".[gui]"   # the daemon lives in the gui extra
+scopus-for-dobby serve --background
+```
+
+Then type `/papers`.
+
+- **Scope** is a tree: each project, unfolding to its collections, then the
+  ungrouped collections. It stays as you left it until you fold it.
+- **Search** floats in its own box above the list (`Enter` to search).
+- **Papers** are cards with authors and year, then the title. `▸` unfolds a card to
+  about three lines of abstract (`… more` for all of it), keywords, journal and
+  citations. `[ ]` / `[x]` picks it; a picked card's frame turns green.
+- **Scrolling** moves the list only: the mouse wheel or trackpad, `▲ ▼`
+  (`k` / `j`), or `‹ prev` / `next ›` (`p` / `n`). The scope and search stay put.
+- **`attach`** (`a`) inserts the picked papers at the prompt cursor as editable
+  lines (`- <EID> · authors year · "title"`); **`attach scope`** (`s`) inserts the
+  current scope and its count instead; **`clear`** (`c`) drops the picks.
+
+The agent gets three tools over the same state — `papers_state` (what you are
+looking at and have picked), `papers_scope` (switch to a project, collection or
+the whole library, optionally with a search) and `papers_select` (add, remove,
+replace or clear picks by EID) — so "these papers" means what is on your screen,
+and you can watch it move.
+
+**What it does and does not do.** Mods run unsandboxed with your user's
+privileges, so read it before you install it (`mods/scopus-papers/hooks/register.tsx`,
+one file). It only talks to `127.0.0.1` on the daemon's port, only with `GET`, and
+never writes to the library: the picks live in the Claude Code session. It starts
+no processes and reads one file, `~/.scopus-for-dobby/daemon.port`, which it
+accepts only if it is a bare port number. Titles, abstracts and keywords are text
+a publisher wrote, so control characters and bidirectional overrides are stripped
+and every field is length-capped before it is drawn, inserted into your prompt or
+handed to the model; the tools' results also say it is untrusted data. The daemon
+itself has no authentication, as before. This was built for the terminal; other
+Claude Code surfaces are untested.
+
+From a checkout, or to hack on it: `claude --plugin-dir ./mods/scopus-papers`, and
+`claude plugin test mods/scopus-papers` runs its tests. It reads the daemon's
+`/articles`, `/projects` and `/collections` responses, so a change to those shapes
+must keep it working.
+
 ## Commands
 
 | Group | Command | Description |
