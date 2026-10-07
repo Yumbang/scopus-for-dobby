@@ -191,6 +191,17 @@ async function loadCatalog($: Api): Promise<Catalog> {
   }
 }
 
+// Why the daemon cannot be used right now, or undefined when it answers. The tools check this
+// first: without it a stopped daemon looks like "no such project" or "paper not found".
+async function daemonProblem($: Api): Promise<string | undefined> {
+  try {
+    await api($, '/health')
+    return undefined
+  } catch (err) {
+    return message(err)
+  }
+}
+
 async function refresh($: Api): Promise<void> {
   await Promise.all([loadCatalog($), reload($, {})])
 }
@@ -372,6 +383,8 @@ export const register: Register = on => {
   )
 
   on('tool.call', { tool: 'mcp__scopus-mod-for-dobby__papers_scope' }, async ($, e) => {
+    const problem = await daemonProblem($)
+    if (problem) return { deny: problem }
     const catalog = await loadCatalog($)
     const project = typeof e.project === 'string' ? e.project : undefined
     const collection = typeof e.collection === 'string' ? e.collection : undefined
@@ -414,6 +427,8 @@ export const register: Register = on => {
     const notFound: string[] = []
     const found: Paper[] = []
     if (action === 'add' || action === 'replace') {
+      const problem = await daemonProblem($)
+      if (problem) return { deny: problem }
       for (const eid of eids) {
         const p = await resolvePaper($, eid)
         if (p) found.push(p)

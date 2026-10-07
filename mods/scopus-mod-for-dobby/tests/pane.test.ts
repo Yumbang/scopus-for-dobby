@@ -21,16 +21,35 @@ test('papers_select rejects bad input and clears', async $ => {
   expect(cleared.picked).toEqual([])
 })
 
-test('papers_select reports eids it cannot resolve instead of picking them', async $ => {
+test('papers_select reports eids it cannot resolve instead of picking them', async ($, on) => {
+  on('env.get', () => ({ value: '/home/test' }))
+  on('fs.read', () => ({ value: '8767' }))
+  on('http.fetch', (_$: any, e: any) =>
+    String(e.url).endsWith('/health')
+      ? { value: { status: 200, ok: true, headers: {}, text: '{"status":"ok"}' } }
+      : { value: { status: 404, ok: false, headers: {}, text: '{"error":"not found"}' } },
+  )
   const out = JSON.parse((await call($, SELECT, { action: 'add', eids: ['2-s2.0-nope'] })).result)
   expect(out.picked).toEqual([])
   expect(out.not_found).toEqual(['2-s2.0-nope'])
 })
 
-test('papers_scope refuses conflicting or unknown scopes', async $ => {
+test('papers_scope refuses conflicting or unknown scopes', async ($, on) => {
+  const json = (body: unknown) => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } })
+  on('env.get', () => ({ value: '/home/test' }))
+  on('fs.read', () => ({ value: '8767' }))
+  on('http.fetch', () => json({ status: 'ok', projects: {}, collections: {}, articles: [], total_matching: 0 }))
   expect((await call($, SCOPE, { project: 'a', all: true })).deny).toMatch(/at most one/)
   expect((await call($, SCOPE, { project: 'ghost' })).deny).toMatch(/No project "ghost"/)
   expect((await call($, SCOPE, { collection: 'ghost' })).deny).toMatch(/No collection "ghost"/)
+})
+
+test('with the daemon off, the tools say so instead of blaming the project or the paper', async $ => {
+  // no env/fs/http answers here: the port file cannot be read, as when no daemon runs
+  expect((await call($, SCOPE, { project: 'ghost' })).deny).toMatch(/daemon is not running/)
+  expect((await call($, SELECT, { action: 'add', eids: ['2-s2.0-1'] })).deny).toMatch(/daemon is not running/)
+  // picks that need no lookup still work offline
+  expect(JSON.parse((await call($, SELECT, { action: 'clear' })).result).picked).toEqual([])
 })
 
 test('the pane draws search, scope and actions on each surface that takes input', async $ => {
@@ -191,9 +210,8 @@ test('a malformed port file never sends a request anywhere but loopback', async 
     urls.push(String(e.url))
     return { value: { status: 200, ok: true, headers: {}, text: '{}' } }
   })
-  const out = JSON.parse((await call($, SCOPE, { all: true })).result)
+  expect((await call($, SCOPE, { all: true })).deny).toMatch(/daemon is not running/)
   expect(urls).toEqual([])
-  expect(out.error).toMatch(/daemon is not running/)
 })
 
 test('text from the library is stripped of control characters and capped', async ($, on) => {
