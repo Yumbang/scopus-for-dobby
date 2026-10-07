@@ -62,13 +62,13 @@ def register(cli):
         multiple=True,
         help="Install only this skill (repeatable). Default: all of them.",
     )
+    # A boolean pair, not `is_flag + default=True + flag_value=False`: Click 8.3 reads that
+    # as "off unless asked", so the pointer was silently never written by default.
     @click.option(
-        "--no-agents-md",
+        "--agents-md/--no-agents-md",
         "agents_md",
-        is_flag=True,
         default=True,
-        flag_value=False,
-        help="Don't write the AGENTS.md pointer section.",
+        help="Write (default) or skip the AGENTS.md pointer section.",
     )
     @click.option("--dry-run", is_flag=True, help="Show what would happen, write nothing.")
     @handle_error
