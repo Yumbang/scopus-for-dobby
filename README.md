@@ -126,7 +126,7 @@ per click:
 
 ```bash
 uv tool install --reinstall --editable ".[gui]"   # the daemon lives in the gui extra
-scopus-for-dobby serve --background
+scopus-for-dobby serve --detach      # starts it in the background and returns; stop with `serve --stop`
 ```
 
 Then type `/scopus-mod`; type it again to close the pane (or `ctrl+x` then `x`, or the pane's close mark). Closing keeps your picks and scope for the rest of the session.
@@ -321,8 +321,19 @@ next free port, announcing the move, since that one is commonly taken; clients
 read `daemon.port` —
 that owns the only DuckDB connection. Start it when you want the macOS GUI, or
 two clients at once (e.g. an agent session alongside an open REPL) — without it,
-a second concurrent process hits DuckDB's file lock. Stop it by killing the PID
-at `~/.scopus-for-dobby/daemon.pid`. The macOS GUI launches it on its own.
+a second concurrent process hits DuckDB's file lock. The macOS GUI launches it on
+its own.
+
+```bash
+scopus-for-dobby serve --detach   # start in the background (macOS, Linux, Windows); runs until stopped
+scopus-for-dobby serve --stop     # stop it and clear ~/.scopus-for-dobby/daemon.{pid,port}
+scopus-for-dobby serve            # or run it in the foreground, Ctrl+C to stop
+```
+
+`--detach` waits until the daemon answers before it returns, and an explicit
+`--idle-timeout N` makes it shut itself down after N idle seconds. The old
+`serve --background` flag is internal: it does **not** detach, and without an
+explicit `--idle-timeout` it exits after ten idle minutes.
 Endpoints (auto-docs at `/docs`): `/articles`, `/collections`, `/projects`, `/search/fts`,
 `/export/ris` (RIS text for a list of EIDs; the `/scopus-mod` pane's export button uses it),
 `/events`, `/events/stream` (SSE), `/health`, `/stats`.

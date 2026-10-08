@@ -12,7 +12,9 @@ import logging
 import os
 import signal
 import socket
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -29,9 +31,84 @@ LOG_FILE = Path.home() / ".scopus-for-dobby" / "daemon.log"
 MAX_LOG_BYTES = 2 * 1024 * 1024
 LOG_BACKUPS = 2
 
-# Fast liveness probe budget — a recycled PID passes os.kill(pid, 0) but won't
-# answer on the recorded port, so we confirm the port is actually accepting.
+# Fast liveness probe budget — a recycled PID passes the "is this PID alive"
+# check but won't answer on the recorded port, so we confirm the port is
+# actually accepting.
 _PROBE_TIMEOUT = 0.5  # seconds
+
+_IS_WINDOWS = sys.platform == "win32"
+
+# A daemon writes its pid file just before uvicorn binds the port, so for a
+# moment "pid alive, port silent" means "still starting", not "recycled PID".
+# Inside this window the stale-state cleanup leaves the files alone; without it
+# any CLI command run during boot deleted the daemon's own registration.
+_BOOT_GRACE = 30.0  # seconds
+
+# Silence is "run forever" only when asked for; a background daemon with no
+# explicit --idle-timeout shuts itself down after this long without requests.
+_BACKGROUND_IDLE_DEFAULT = 600.0
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a process with this PID exists — without disturbing it.
+
+    ``os.kill(pid, 0)`` is the POSIX idiom, and it is fatal on Windows: there
+    every signal except the console Ctrl events is ``TerminateProcess``, so the
+    "probe" kills the daemon it was asking about, and a PID that does not exist
+    raises a bare ``OSError`` rather than ``ProcessLookupError``. Windows asks
+    the kernel instead.
+    """
+    if pid <= 0:
+        return False
+    if not _IS_WINDOWS:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # exists, just not ours to signal
+        return True
+    return _pid_alive_windows(pid)
+
+
+def _pid_alive_windows(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    error_access_denied = 5
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        # Access denied means the process exists and belongs to someone else.
+        return ctypes.get_last_error() == error_access_denied
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def detached_popen_kwargs() -> dict:
+    """``subprocess.Popen`` options that let a child outlive this process.
+
+    POSIX starts a new session; Windows has no sessions, so the child gets its
+    own console-less process group instead (``start_new_session`` is ignored).
+    """
+    if _IS_WINDOWS:
+        return {
+            "creationflags": (
+                subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW
+            )
+        }
+    return {"start_new_session": True}
 
 
 def _write_pid(port: int) -> None:
@@ -102,6 +179,14 @@ def _first_free_port(start: int, tries: int = 4) -> int | None:
     return None
 
 
+def _is_booting() -> bool:
+    """True if the pid file is young enough that its daemon may not be listening yet."""
+    try:
+        return time.time() - PID_FILE.stat().st_mtime < _BOOT_GRACE
+    except OSError:
+        return False
+
+
 def daemon_endpoint() -> str | None:
     """Return ``http://127.0.0.1:<port>`` if a live daemon PID file exists."""
     if not PID_FILE.exists() or not PORT_FILE.exists():
@@ -111,23 +196,87 @@ def daemon_endpoint() -> str | None:
         port = int(PORT_FILE.read_text().strip())
     except (ValueError, OSError):
         return None
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+    if not _pid_alive(pid):
         _clear_pid()
         return None
-    except PermissionError:
-        # Process exists but we can't signal it — assume alive.
-        pass
-    # A recycled PID survives os.kill(pid, 0) but belongs to an unrelated
+    # A recycled PID passes the liveness check but belongs to an unrelated
     # process that won't answer on our port. Confirm the port is live before
     # reporting the daemon up; otherwise treat it as dead and clear stale state.
     # (Our own PID can never be a recycled foreign process, so skip the probe
     # there — this also keeps the in-process discovery path cheap.)
     if pid != os.getpid() and not _port_responds(port):
-        _clear_pid()
+        if not _is_booting():
+            _clear_pid()
         return None
     return f"http://127.0.0.1:{port}"
+
+
+def stop_daemon(timeout: float = 10.0) -> bool:
+    """Stop the running daemon and clear its files. True if one was stopped.
+
+    A daemon is only signalled when its port answers, so a recycled PID is
+    never killed. On Windows ``SIGTERM`` is ``TerminateProcess``: the daemon
+    gets no chance to remove its own pid/port files, so they are cleared here.
+    """
+    if daemon_endpoint() is None:  # also clears stale files
+        return False
+    try:
+        pid = int(PID_FILE.read_text().strip())
+    except (ValueError, OSError):
+        return False
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and _pid_alive(pid):
+        time.sleep(0.1)
+    stopped = not _pid_alive(pid)
+    if stopped:
+        _clear_pid()
+    return stopped
+
+
+def spawn_detached(port: int | None) -> subprocess.Popen:
+    """Start ``serve --background`` as a detached child that never idles out."""
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    log = open(LOG_FILE, "ab")  # noqa: SIM115 — handed to the child
+    with contextlib.suppress(OSError):
+        os.chmod(LOG_FILE, 0o600)
+    cmd = [sys.executable, "-m", "scopus_for_dobby.cli", "serve", "--background"]
+    cmd += ["--idle-timeout", "0"]
+    if port is not None:
+        cmd += ["--port", str(port)]
+    return subprocess.Popen(  # noqa: S603
+        cmd,
+        stdout=log,
+        stderr=log,
+        stdin=subprocess.DEVNULL,
+        close_fds=True,
+        **detached_popen_kwargs(),
+    )
+
+
+def _detach(ctx: click.Context, port: int, boot_timeout: float = 30.0) -> None:
+    """``serve --detach``: spawn the daemon, wait until it answers, report."""
+    existing = daemon_endpoint()
+    if existing:
+        click.echo(f"Daemon already running at {existing}")
+        return
+    explicit = ctx.get_parameter_source("port") is ParameterSource.COMMANDLINE
+    child = spawn_detached(port if explicit else None)
+    deadline = time.monotonic() + boot_timeout
+    while time.monotonic() < deadline:
+        endpoint = daemon_endpoint()
+        if endpoint:
+            click.echo(f"Daemon started at {endpoint}")
+            return
+        if child.poll() is not None:
+            break  # the child exited: it will not come up
+        time.sleep(0.2)
+    click.echo(
+        f"The daemon did not come up within {boot_timeout:.0f}s. See {LOG_FILE} for why.",
+        err=True,
+    )
+    sys.exit(1)
 
 
 def register(cli):
@@ -148,11 +297,36 @@ def register(cli):
         help="Self-shutdown after N seconds with no requests "
         "(0 = run forever). Default 600 in --background mode.",
     )
+    @click.option(
+        "--detach",
+        is_flag=True,
+        help="Start the daemon in the background and return once it answers "
+        "(works on macOS, Linux and Windows). It runs until `serve --stop`.",
+    )
+    @click.option("--stop", is_flag=True, help="Stop the running daemon and exit.")
     @click.pass_context
     def serve(
-        ctx, host: str, port: int, reload: bool, background: bool, idle_timeout: float
+        ctx,
+        host: str,
+        port: int,
+        reload: bool,
+        background: bool,
+        idle_timeout: float,
+        detach: bool,
+        stop: bool,
     ):
         """Run the HTTP daemon. CLI/GUI clients attach to it for all DB access."""
+        if stop and detach:
+            raise click.UsageError("--stop and --detach are mutually exclusive.")
+        if stop:
+            if stop_daemon():
+                click.echo("Daemon stopped.")
+            else:
+                click.echo("No daemon is running.", err=True)
+            return
+        if detach:
+            _detach(ctx, port)
+            return
         try:
             import uvicorn
         except ImportError:
@@ -197,8 +371,9 @@ def register(cli):
         signal.signal(signal.SIGINT, _on_exit)
 
         effective_timeout = idle_timeout
-        if background and effective_timeout == 0.0:
-            effective_timeout = 600.0  # 10-minute idle window for lazy-spawn
+        idle_given = ctx.get_parameter_source("idle_timeout") is ParameterSource.COMMANDLINE
+        if background and not idle_given:
+            effective_timeout = _BACKGROUND_IDLE_DEFAULT  # the old lazy-spawn window
 
         log_kwargs = {}
         if background:

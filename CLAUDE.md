@@ -95,6 +95,8 @@ Subcommands never import `core/article_db` directly — they go through `cli/_cl
 
 The daemon *server* (`fastapi`, `uvicorn`) lives in the optional `[gui]` extra; the client (`httpx`) is core, so a bare install can attach to a daemon it cannot itself start. This amends ADR-7, which had every CLI invocation lazy-spawn a daemon. Any function reachable via `db_mod.<name>` must be listed in `_client._API` and implemented by **both** backends.
 
+The daemon runs on Windows too, which constrains how its lifecycle code may probe processes: never `os.kill(pid, 0)` as a liveness check (on Windows every signal but the console Ctrl events is `TerminateProcess`, so it kills the daemon and a missing PID raises a bare `OSError`) and never `os.kill(os.getpid(), SIGTERM)` to stop yourself. Use `serve._pid_alive`, `serve.stop_daemon` and `app._terminate_self`; `serve --detach` / `--stop` are the portable start and stop.
+
 ### The `/scopus-mod` Claude Code mod
 
 `mods/scopus-mod-for-dobby/` is a Claude Code mod (marketplace file at `.claude-plugin/marketplace.json`) that reads the daemon's `GET /articles`, `/articles/{eid}`, `/projects` and `/collections`, and posts to `/export/ris`, over loopback. It reads the library only and starts no processes; the one thing it writes is the `.ris` file for an explicit `export .ris` press, using the daemon's `POST /export/ris` (which renders through `core/export.ris_text`, the same code as the CLI's RIS export); keep it that narrow. Changing those response shapes (`all_authors`, `abstract`, `keywords`, `index_keywords`, `total_matching`, the project/collection dicts) breaks the pane, so check `claude plugin test mods/scopus-mod-for-dobby` and update it in the same commit.

@@ -66,7 +66,7 @@ scopus-for-dobby search "deep learning" --limit 20   # or direct subcommands
 | `export --format xlsx\|bibtex\|ris [-o] [-t] [-c\|-p] [--from-last-search]` | Bibliography export, up to 100,000 rows; `--json` is one object on success |
 | `openalex enrich / graph / analyze / key / email` | OA PDF links, citation counts, topics; citation-graph files; `analyze` interprets a graph (**citation-analysis** skill). Free, but metered per IP — set `openalex key` first |
 | `profile [-c\|-p] [-t]` | Topic/keyword frequencies over a large saved set — load the **corpus-profiling** skill first |
-| `serve [--port] [--idle-timeout]` | Start the HTTP daemon (needs the `[gui]` extra). Only needed for the macOS GUI, or to run two clients at once — see `references/troubleshooting.md` |
+| `serve [--detach \| --stop] [--port] [--idle-timeout]` | Start the HTTP daemon (needs the `[gui]` extra); `--detach` backgrounds it and returns, `--stop` stops it. Only needed for the macOS GUI, or to run two clients at once — see `references/troubleshooting.md` |
 | `skill install / list / status / uninstall / path` | Install these agent skills for an agent (default: claude) |
 | `repl` | Interactive REPL (same as running with no subcommand) |
 

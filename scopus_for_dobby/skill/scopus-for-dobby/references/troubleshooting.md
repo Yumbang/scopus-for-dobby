@@ -35,7 +35,8 @@ close the other one, or put a daemon in front so everything shares a single
 connection:
 
 ```bash
-scopus-for-dobby serve        # another terminal; needs the [gui] extra
+scopus-for-dobby serve --detach # background, returns once it answers; needs the [gui] extra
+scopus-for-dobby serve --stop   # when you are done
 ```
 
 **The daemon is not on 8765.**
@@ -55,7 +56,7 @@ once per machine; subsequent runs are fast.
 
 **GUI shows "daemon not running".**
 Plain CLI commands do **not** start a daemon. Use the GUI's "Launch daemon"
-button, or run `scopus-for-dobby serve` yourself.
+button, or run `scopus-for-dobby serve --detach` yourself.
 
 **Something failed inside the daemon.**
 Its diagnostics go to `~/.scopus-for-dobby/daemon.log` (the daemon writes this

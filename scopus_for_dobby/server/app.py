@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import signal
+import sys
 import time
 from contextlib import asynccontextmanager
 from typing import Any
@@ -35,6 +36,19 @@ logger = logging.getLogger(__name__)
 
 def _err(exc: Exception, status: int = 400) -> dict:
     return {"error": str(exc), "type": type(exc).__name__, "status": status}
+
+
+def _terminate_self() -> None:
+    """Ask this process to shut down the way ``kill -TERM`` would.
+
+    On Windows ``os.kill(own_pid, SIGTERM)`` is ``TerminateProcess``: the process
+    dies on the spot and its handlers (which remove the pid/port files) never run.
+    Raising the signal in-process runs them.
+    """
+    if sys.platform == "win32":
+        signal.raise_signal(signal.SIGTERM)
+    else:
+        os.kill(os.getpid(), signal.SIGTERM)
 
 
 def build_app(idle_timeout: float | None = None):
@@ -93,7 +107,7 @@ def build_app(idle_timeout: float | None = None):
             if activity["streams"] > 0:
                 continue
             if time.monotonic() - activity["last"] >= idle_timeout:
-                os.kill(os.getpid(), signal.SIGTERM)
+                _terminate_self()
                 return
 
     app = FastAPI(title="scopus-for-dobby", version="1.0.0", lifespan=_lifespan)

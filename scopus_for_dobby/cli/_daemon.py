@@ -17,8 +17,6 @@ does not, since ``httpx`` is a core dependency.
 from __future__ import annotations
 
 import contextlib
-import errno
-import fcntl
 import os
 import socket
 import subprocess
@@ -26,7 +24,20 @@ import sys
 import time
 from pathlib import Path
 
-from .serve import LOG_FILE, MAX_LOG_BYTES, PID_FILE, PORT_FILE, daemon_endpoint
+from .serve import (
+    LOG_FILE,
+    MAX_LOG_BYTES,
+    PID_FILE,
+    PORT_FILE,
+    _pid_alive,
+    daemon_endpoint,
+    detached_popen_kwargs,
+)
+
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl; the spawn lock below is skipped there
+    fcntl = None
 
 LOCK_FILE = Path.home() / ".scopus-for-dobby" / "daemon.lock"
 DEFAULT_PORT = 8765
@@ -118,8 +129,8 @@ def _spawn(port: int) -> None:
         stdout=log,
         stderr=log,
         stdin=subprocess.DEVNULL,
-        start_new_session=True,
         close_fds=True,
+        **detached_popen_kwargs(),
     )
 
 
@@ -131,10 +142,11 @@ def ensure_daemon(port: int = DEFAULT_PORT) -> str:
 
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(LOCK_FILE, "w") as lf:
-        try:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-        except OSError as e:  # pragma: no cover — fcntl rarely fails locally
-            raise DaemonSpawnError(f"could not acquire daemon lock: {e}") from e
+        if fcntl is not None:
+            try:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            except OSError as e:  # pragma: no cover — fcntl rarely fails locally
+                raise DaemonSpawnError(f"could not acquire daemon lock: {e}") from e
 
         # Re-check under lock — a sibling CLI may have spawned it while we waited.
         existing = daemon_endpoint()
@@ -180,21 +192,17 @@ def stop_daemon(timeout: float = 5.0) -> bool:
         pid = int(PID_FILE.read_text().strip())
     except (ValueError, OSError):
         return False
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
+    if not _pid_alive(pid):
         with contextlib.suppress(FileNotFoundError):
             PID_FILE.unlink()
+        with contextlib.suppress(FileNotFoundError):
             PORT_FILE.unlink()
         return False
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _pid_alive(pid):
             return True
-        except OSError as e:
-            if e.errno == errno.ESRCH:
-                return True
         time.sleep(0.05)
     return False
