@@ -389,3 +389,19 @@ test('export .ris with nothing picked, or an old daemon, writes nothing', async 
   expect(written).toEqual([])
   await ui.unmount()
 })
+
+test('on Windows, where HOME is unset, the daemon is found through USERPROFILE', async ($, on) => {
+  const read: string[] = []
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'USERPROFILE' ? 'C:\\Users\\USER' : undefined }))
+  on('fs.read', (_$: any, e: any) => {
+    read.push(String(e.path))
+    return { value: '8765' }
+  })
+  on('http.fetch', () => ({
+    value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ status: 'ok', projects: {}, collections: {}, articles: [], total_matching: 0 }) },
+  }))
+  const out = await call($, SCOPE, { all: true })
+  expect(out.deny).toBeUndefined()
+  // (the test engine runs on POSIX, which prefixes a relative-looking path with the cwd)
+  expect(read[0]).toMatch(/C:\\Users\\USER\/\.scopus-for-dobby\/daemon\.port$/)
+})

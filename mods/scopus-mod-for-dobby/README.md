@@ -9,7 +9,7 @@ and selection through three tools (`papers_state`, `papers_scope`, `papers_selec
 ```
 
 It needs the scopus-for-dobby daemon (`uv tool install --editable ".[gui]"`, then
-`scopus-for-dobby serve --background`). Full description, controls and the security
+`scopus-for-dobby serve --detach`). Full description, controls and the security
 notes are in the [repository README](../../README.md#claude-code-mod-the-scopus-mod-pane).
 
 Develop: `claude --plugin-dir mods/scopus-mod-for-dobby`; test: `claude plugin test mods/scopus-mod-for-dobby`.

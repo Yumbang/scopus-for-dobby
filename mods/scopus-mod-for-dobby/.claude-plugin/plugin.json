@@ -1,6 +1,6 @@
 {
   "name": "scopus-mod-for-dobby",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A /scopus-mod side pane for browsing the scopus-for-dobby library and attaching papers to the chat, with tools the agent can use to steer the same scope and selection.",
   "types": "./types/index.d.ts",
   "author": {
