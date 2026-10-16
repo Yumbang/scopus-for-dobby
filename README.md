@@ -334,9 +334,30 @@ scopus-for-dobby serve            # or run it in the foreground, Ctrl+C to stop
 `--idle-timeout N` makes it shut itself down after N idle seconds. The old
 `serve --background` flag is internal: it does **not** detach, and without an
 explicit `--idle-timeout` it exits after ten idle minutes.
+
+**With several agents on one library** the daemon is also the scheduler, because it is
+the one process they all share:
+
+- **Writes queue, then say "busy".** One writer at a time. A write that cannot get the slot
+  within 20 s (`SCOPUS_WRITE_WAIT`) is answered `503` with `Retry-After`, and the CLI waits
+  that out and retries instead of timing out. Reads never wait on writes.
+- **The search index is not rebuilt per write.** DuckDB's full-text index (used by the GUI's
+  search box) cannot be updated in place, so it used to be rebuilt after every add. Now a write
+  only marks it stale; the daemon rebuilds it once, in the background, 5 s after writes go
+  quiet (never more than 60 s behind). Until then a search still finds new papers, through
+  a plain term match over what was written since. A daemon-less CLI rebuilds before an
+  index search, once.
+- **External APIs are paced together.** The daemon hands out rate-limit slots, so five agents
+  respect Elsevier's 10 requests a second together, not each on its own. Without a daemon each
+  process keeps its own timer, as before.
+- **You can see it.** `scopus-for-dobby serve --status` (add `--json` before `serve` for
+  machine output) shows load, the last slow requests (anything over 1 s, `SCOPUS_SLOW_REQUEST`;
+  also in `daemon.log`, path only), the writer queue, the search index and what its last
+  rebuild cost, rate slots, and the database size.
+
 Endpoints (auto-docs at `/docs`): `/articles`, `/collections`, `/projects`, `/search/fts`,
 `/export/ris` (RIS text for a list of EIDs; the `/scopus-mod` pane's export button uses it),
-`/events`, `/events/stream` (SSE), `/health`, `/stats`.
+`/admin/status`, `/scheduler/slot`, `/events`, `/events/stream` (SSE), `/health`, `/stats`.
 
 ## Access Tiers
 

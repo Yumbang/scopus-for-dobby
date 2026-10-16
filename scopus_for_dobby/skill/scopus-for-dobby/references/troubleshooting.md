@@ -39,6 +39,13 @@ scopus-for-dobby serve --detach # background, returns once it answers; needs the
 scopus-for-dobby serve --stop   # when you are done
 ```
 
+**Commands time out, or say "the daemon is busy", when several agents share the library.**
+The daemon runs one writer at a time and queues the rest; a write that waits too long gets a
+`503` and the CLI retries it for you. If you still see it, `scopus-for-dobby serve --status`
+shows what is slow: recent requests over a second, writers waiting, whether the search index
+is rebuilding, and the database size. Reads and `serve --status` itself stay responsive while
+writes queue. Spread bulk writes (`search-all`, many `abstract` calls) across fewer agents.
+
 **The daemon is not on 8765.**
 That port is popular — other tools take it. With no explicit `--port`, `serve`
 treats the default as a guess and moves to the next free port, announcing
