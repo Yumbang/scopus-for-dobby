@@ -293,25 +293,25 @@ def _human_bytes(n: int | None) -> str:
 def _format_status(d: dict) -> str:
     up = d["uptime_s"]
     lines = [
-        f"Daemon {d['version']} · pid {d['pid']} · up {up // 86400}d {up % 86400 // 3600}h "
+        f"Daemon {d['version']} | pid {d['pid']} | up {up // 86400}d {up % 86400 // 3600}h "
         f"{up % 3600 // 60}m",
         f"Database   {_human_bytes(d['db']['size_bytes'])} "
         f"(+{_human_bytes(d['db']['wal_bytes'])} WAL)  {d['db']['path']}",
     ]
     r = d["requests"]
     codes = " ".join(f"{k} {v}" for k, v in sorted(r["by_status"].items())) or "none yet"
-    lines.append(f"Requests   {r['total']} total · {r['in_flight']} in flight · {codes}")
+    lines.append(f"Requests   {r['total']} total | {r['in_flight']} in flight | {codes}")
     if r["slow_recent"]:
-        lines.append(f"Slow (≥{r['slow_after_s']:g}s), most recent last:")
+        lines.append(f"Slow (over {r['slow_after_s']:g}s), most recent last:")
         lines += [
             f"   {x['at']}  {x['method']} {x['path']} -> {x['status']}  {x['seconds']}s"
             for x in r["slow_recent"][-8:]
         ]
     else:
-        lines.append(f"Slow       none (≥{r['slow_after_s']:g}s) since the daemon started")
+        lines.append(f"Slow       none (over {r['slow_after_s']:g}s) since the daemon started")
     w = d["writer"]
     lines.append(
-        f"Writers    {w['waiting']} waiting · {w['busy_rejections']} told to retry "
+        f"Writers    {w['waiting']} waiting | {w['busy_rejections']} told to retry "
         f"(a writer queues at most {w['wait_limit_s']:g}s)"
     )
     f = d["fts"]
@@ -326,13 +326,13 @@ def _format_status(d: dict) -> str:
         else "never built"
     )
     worker = "background worker on" if f["background_worker"] else "no background worker"
-    lines.append(f"Search idx {state} · {cost} · {worker}")
+    lines.append(f"Search idx {state} | {cost} | {worker}")
     if f.get("last_error"):
         lines.append(f"           last rebuild error: {f['last_error']}")
     if d["rate"]:
         lines.append(
             "Rate slots "
-            + " · ".join(f"{k}: {v['granted']} granted" for k, v in d["rate"].items())
+            + " | ".join(f"{k}: {v['granted']} granted" for k, v in d["rate"].items())
         )
     return "\n".join(lines)
 

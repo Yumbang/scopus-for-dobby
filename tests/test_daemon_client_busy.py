@@ -193,13 +193,17 @@ class TestStatusCommand:
             "1234 total",
             "2 in flight",
             "POST /articles -> 200  4.2s",
-            "1 waiting · 3 told to retry",
+            "1 waiting | 3 told to retry",
             "STALE (12 events behind)",
             "last rebuild 4.2s for 20441 rows",
             "background worker on",
             "/content/article: 77 granted",
         ):
             assert needle in text, needle
+
+    def test_output_is_ascii_safe_for_a_windows_console(self):
+        # cp1252 (a redirected Windows console) cannot encode characters such as U+2265.
+        serve._format_status(self.SAMPLE).encode("cp1252")
 
     def test_a_fresh_idle_daemon(self):
         sample = {
@@ -209,7 +213,7 @@ class TestStatusCommand:
             "rate": {},
         }
         text = serve._format_status(sample)
-        assert "none (≥1s) since the daemon started" in text
+        assert "none (over 1s) since the daemon started" in text
         assert "fresh" in text and "never built" in text
 
     def test_no_daemon_is_reported(self, monkeypatch, capsys):
