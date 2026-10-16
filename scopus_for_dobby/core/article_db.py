@@ -12,6 +12,7 @@ Each article is keyed by EID for deduplication. Supports:
 import contextlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -75,6 +76,24 @@ _thread_local = threading.local()
 # serializing every ``_txn`` block costs nothing in practice and eliminates
 # the conflict class entirely. Reads remain parallel (no lock).
 _write_lock = threading.Lock()
+
+# How long a writer queues for the slot before giving up. It must stay under the
+# CLI's 30 s read timeout: a request that can't get the slot should say "busy, retry"
+# promptly (the daemon turns this into a 503 + Retry-After) rather than let the client
+# time out with no explanation.
+WRITE_WAIT = float(os.environ.get("SCOPUS_WRITE_WAIT", "20"))
+_writer_stats = {"waiting": 0, "busy_rejections": 0}
+_writer_stats_lock = threading.Lock()
+
+
+class WriteBusy(RuntimeError):
+    """The writer slot stayed taken for the whole wait: a long write or rebuild is running."""
+
+
+def writer_stats() -> dict:
+    """Writers queued right now, and how many gave up since the process started."""
+    with _writer_stats_lock:
+        return {**_writer_stats, "wait_limit_s": WRITE_WAIT}
 
 
 def _open_conn(read_only: bool = False) -> duckdb.DuckDBPyConnection:
@@ -404,7 +423,18 @@ def _txn(conn: duckdb.DuckDBPyConnection):
     this serialization is free; reads continue to run in parallel because
     they don't go through ``_txn``.
     """
-    with _write_lock:
+    with _writer_stats_lock:
+        _writer_stats["waiting"] += 1
+    try:
+        got = _write_lock.acquire(timeout=WRITE_WAIT)
+    finally:
+        with _writer_stats_lock:
+            _writer_stats["waiting"] -= 1
+    if not got:
+        with _writer_stats_lock:
+            _writer_stats["busy_rejections"] += 1
+        raise WriteBusy(f"the database has been busy writing for over {WRITE_WAIT:.0f}s")
+    try:
         conn.execute("BEGIN TRANSACTION")
         try:
             yield conn
@@ -413,6 +443,8 @@ def _txn(conn: duckdb.DuckDBPyConnection):
             raise
         else:
             conn.execute("COMMIT")
+    finally:
+        _write_lock.release()
 
 
 def close_cached_connections() -> None:

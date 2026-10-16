@@ -36,6 +36,9 @@ def cli(ctx, use_json):
         ctx.invoke(repl_cmd)
 
 
+from scopus_for_dobby.utils import api_client as _api_client  # noqa: E402
+
+from . import _http as _http_backend  # noqa: E402
 from . import auth as _auth  # noqa: E402
 from . import author as _author  # noqa: E402
 from . import collection as _collection  # noqa: E402
@@ -49,6 +52,9 @@ from . import repl as _repl  # noqa: E402
 from . import search as _search  # noqa: E402
 from . import serve as _serve  # noqa: E402
 from . import skill as _skill  # noqa: E402
+
+# With a daemon running, it paces the external APIs for every process together.
+_api_client.set_slot_provider(_http_backend.reserve_slot)
 
 _auth.register(cli)
 _search.register(cli)

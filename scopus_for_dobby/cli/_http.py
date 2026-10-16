@@ -16,6 +16,7 @@ startup path of commands that never reach this backend.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -31,6 +32,17 @@ _client_factory = None  # type: ignore[var-annotated]
 
 class DaemonUnavailableError(RuntimeError):
     """Raised when the daemon backend is selected but cannot be reached."""
+
+
+class DaemonBusyError(RuntimeError):
+    """The daemon is up but did not answer in time, or kept answering "busy"."""
+
+
+# A write that finds the daemon's single writer slot taken is told "503, retry in N s".
+# Waiting that out here is what keeps five agents writing at once from failing: most of
+# them only have to queue. Bounded, so a wedged daemon still ends in an error.
+_BUSY_RETRIES = 6
+_BUSY_MAX_WAIT = 60.0  # seconds, in total
 
 
 def _client():
@@ -69,26 +81,82 @@ def _check(r) -> None:
     r.raise_for_status()
 
 
+def _send(method: str, path: str, **kwargs: Any) -> Any:
+    """One request, retried while the daemon says it is busy; returns the decoded JSON."""
+    import httpx
+
+    waited = 0.0
+    for attempt in range(_BUSY_RETRIES + 1):
+        try:
+            with _client() as c:
+                r = c.request(method, path, **kwargs)
+        except httpx.TimeoutException as exc:
+            raise DaemonBusyError(
+                f"The daemon did not answer {method} {path} in time. It is probably busy "
+                f"with a long write or index rebuild; `scopus-for-dobby serve --status` "
+                f"shows what it is doing."
+            ) from exc
+        if r.status_code != 503 or attempt == _BUSY_RETRIES:
+            if r.status_code == 503:
+                raise DaemonBusyError(
+                    "The daemon stayed busy writing and did not take this request. "
+                    "Try again in a moment (`scopus-for-dobby serve --status`)."
+                )
+            _check(r)
+            return r.json()
+        try:
+            hint = float(r.headers.get("Retry-After", "2"))
+        except ValueError:
+            hint = 2.0
+        pause = min(max(hint, 0.5), 5.0) * (1 + attempt * 0.5)
+        if waited + pause > _BUSY_MAX_WAIT:
+            raise DaemonBusyError("The daemon stayed busy writing and did not take this request.")
+        time.sleep(pause)
+        waited += pause
+    raise DaemonBusyError("unreachable")  # pragma: no cover
+
+
 def _get(path: str, **params: Any) -> Any:
     params = {k: v for k, v in params.items() if v is not None}
-    with _client() as c:
-        r = c.get(path, params=params)
-        _check(r)
-        return r.json()
+    return _send("GET", path, params=params)
 
 
 def _post(path: str, body: dict | None = None) -> Any:
-    with _client() as c:
-        r = c.post(path, json=body or {})
-        _check(r)
-        return r.json()
+    return _send("POST", path, json=body or {})
 
 
 def _delete(path: str, body: dict | None = None) -> Any:
-    with _client() as c:
-        r = c.request("DELETE", path, json=body or {})
-        _check(r)
-        return r.json()
+    return _send("DELETE", path, json=body or {})
+
+
+# ── Shared rate limiting ──────────────────────────────────────────────────────
+# `None` = not resolved yet, `False` = no usable daemon (stop asking).
+_slot_endpoint: Any = None
+
+
+def reserve_slot(endpoint: str) -> float | None:
+    """Seconds to wait before sending to an external API endpoint, per the daemon.
+
+    The daemon paces every process together, which a per-process timer cannot. Returns
+    ``None`` whenever it cannot answer (no daemon, an older one, an error), and then the
+    caller keeps to its own timer: pacing is best-effort, never a reason to fail a call.
+    """
+    global _slot_endpoint
+    import httpx
+
+    if _slot_endpoint is None:
+        _slot_endpoint = daemon_endpoint() or False
+    if not _slot_endpoint:
+        return None
+    try:
+        r = httpx.post(
+            f"{_slot_endpoint}/scheduler/slot", json={"endpoint": endpoint}, timeout=2.0
+        )
+        r.raise_for_status()
+        return max(0.0, min(float(r.json()["wait"]), 30.0))
+    except Exception:  # noqa: BLE001 — see docstring
+        _slot_endpoint = False
+        return None
 
 
 # ── Articles ──────────────────────────────────────────────────────────────────

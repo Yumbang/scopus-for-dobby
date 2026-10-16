@@ -192,6 +192,12 @@ def test_detach_and_stop_roundtrip(tmp_path):
         assert stats.returncode == 0, stats.stderr
         urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=10)  # noqa: S310
 
+        status = subprocess.run(  # noqa: S603
+            [*cli, "--status"], env=env, capture_output=True, text=True, timeout=60
+        )
+        assert status.returncode == 0, status.stderr
+        assert "Search idx" in status.stdout and "Writers" in status.stdout
+
         stopped = subprocess.run(  # noqa: S603
             [*cli, "--stop"], env=env, capture_output=True, text=True, timeout=60
         )

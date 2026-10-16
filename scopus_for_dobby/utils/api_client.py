@@ -116,8 +116,25 @@ def get_cached_quota() -> dict | None:
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 
 
+# Set by the CLI when a daemon is running: asks it how long to wait, so that every process
+# shares one limiter instead of each keeping its own timer. Returns None when it cannot
+# answer, and the local timer below takes over.
+_slot_provider = None
+
+
+def set_slot_provider(provider) -> None:
+    global _slot_provider
+    _slot_provider = provider
+
+
 def _throttle(endpoint: str):
     """Sleep if needed to respect per-endpoint rate limits."""
+    if _slot_provider is not None:
+        wait = _slot_provider(endpoint)
+        if wait is not None:
+            if wait > 0:
+                time.sleep(wait)
+            return
     for prefix, interval in _THROTTLE.items():
         if prefix in endpoint:
             last = _last_call.get(prefix, 0)

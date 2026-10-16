@@ -279,6 +279,87 @@ def _detach(ctx: click.Context, port: int, boot_timeout: float = 30.0) -> None:
     sys.exit(1)
 
 
+def _human_bytes(n: int | None) -> str:
+    if n is None:
+        return "?"
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{n} B"  # pragma: no cover
+
+
+def _format_status(d: dict) -> str:
+    up = d["uptime_s"]
+    lines = [
+        f"Daemon {d['version']} · pid {d['pid']} · up {up // 86400}d {up % 86400 // 3600}h "
+        f"{up % 3600 // 60}m",
+        f"Database   {_human_bytes(d['db']['size_bytes'])} "
+        f"(+{_human_bytes(d['db']['wal_bytes'])} WAL)  {d['db']['path']}",
+    ]
+    r = d["requests"]
+    codes = " ".join(f"{k} {v}" for k, v in sorted(r["by_status"].items())) or "none yet"
+    lines.append(f"Requests   {r['total']} total · {r['in_flight']} in flight · {codes}")
+    if r["slow_recent"]:
+        lines.append(f"Slow (≥{r['slow_after_s']:g}s), most recent last:")
+        lines += [
+            f"   {x['at']}  {x['method']} {x['path']} -> {x['status']}  {x['seconds']}s"
+            for x in r["slow_recent"][-8:]
+        ]
+    else:
+        lines.append(f"Slow       none (≥{r['slow_after_s']:g}s) since the daemon started")
+    w = d["writer"]
+    lines.append(
+        f"Writers    {w['waiting']} waiting · {w['busy_rejections']} told to retry "
+        f"(a writer queues at most {w['wait_limit_s']:g}s)"
+    )
+    f = d["fts"]
+    state = "STALE" if f["stale"] else "fresh"
+    if f["stale"] and f["behind"] is not None:
+        state += f" ({f['behind']} events behind)"
+    if f["rebuilding"]:
+        state += ", rebuilding now"
+    cost = (
+        f"last rebuild {f['last_rebuild_ms'] / 1000:.1f}s for {f['rows']} rows at {f['built_at']}"
+        if f["built_at"]
+        else "never built"
+    )
+    worker = "background worker on" if f["background_worker"] else "no background worker"
+    lines.append(f"Search idx {state} · {cost} · {worker}")
+    if f.get("last_error"):
+        lines.append(f"           last rebuild error: {f['last_error']}")
+    if d["rate"]:
+        lines.append(
+            "Rate slots "
+            + " · ".join(f"{k}: {v['granted']} granted" for k, v in d["rate"].items())
+        )
+    return "\n".join(lines)
+
+
+def _show_status() -> None:
+    import httpx
+
+    from ._output import output
+    from ._state import state
+
+    endpoint = daemon_endpoint()
+    if not endpoint:
+        click.echo("No daemon is running.", err=True)
+        sys.exit(1)
+    try:
+        r = httpx.get(f"{endpoint}/admin/status", timeout=10.0)
+        r.raise_for_status()
+    except httpx.HTTPError as exc:
+        click.echo(f"The daemon did not report its status: {exc}", err=True)
+        sys.exit(1)
+    data = r.json()
+    if state.json_output:
+        output(data)
+    else:
+        click.echo(_format_status(data))
+
+
 def register(cli):
     @cli.command(name="serve")
     @click.option("--host", default="127.0.0.1", show_default=True)
@@ -304,6 +385,12 @@ def register(cli):
         "(works on macOS, Linux and Windows). It runs until `serve --stop`.",
     )
     @click.option("--stop", is_flag=True, help="Stop the running daemon and exit.")
+    @click.option(
+        "--status",
+        is_flag=True,
+        help="Show what the running daemon is doing (load, slow requests, writer queue, "
+        "search index, rate limits) and exit.",
+    )
     @click.pass_context
     def serve(
         ctx,
@@ -314,10 +401,14 @@ def register(cli):
         idle_timeout: float,
         detach: bool,
         stop: bool,
+        status: bool,
     ):
         """Run the HTTP daemon. CLI/GUI clients attach to it for all DB access."""
-        if stop and detach:
-            raise click.UsageError("--stop and --detach are mutually exclusive.")
+        if sum([stop, detach, status]) > 1:
+            raise click.UsageError("--stop, --detach and --status are mutually exclusive.")
+        if status:
+            _show_status()
+            return
         if stop:
             if stop_daemon():
                 click.echo("Daemon stopped.")
@@ -388,7 +479,7 @@ def register(cli):
 
         try:
             uvicorn.run(
-                build_app(idle_timeout=effective_timeout or None),
+                build_app(idle_timeout=effective_timeout or None, fts_worker=True),
                 host=host,
                 port=port,
                 log_level="warning" if background else "info",

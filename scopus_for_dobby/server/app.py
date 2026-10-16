@@ -30,6 +30,8 @@ from typing import Any
 
 from scopus_for_dobby import __version__
 from scopus_for_dobby.core import article_db as adb
+from scopus_for_dobby.server import scheduler
+from scopus_for_dobby.utils.api_client import _THROTTLE
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +53,15 @@ def _terminate_self() -> None:
         os.kill(os.getpid(), signal.SIGTERM)
 
 
-def build_app(idle_timeout: float | None = None):
+def build_app(
+    idle_timeout: float | None = None,
+    *,
+    fts_worker: bool = False,
+    fts_debounce: float = 5.0,
+    fts_max_wait: float = 60.0,
+    fts_poll: float = 1.0,
+    slow_request: float | None = None,
+):
     """Build the FastAPI app. Imported lazily so FastAPI is an optional dep.
 
     ``idle_timeout`` (seconds) enables a background watchdog that sends
@@ -60,6 +70,12 @@ def build_app(idle_timeout: float | None = None):
     process. ``serve --background`` always sets it — that is the only
     configuration the daemon runs in for real. Pass ``None`` (default) for
     tests and the foreground ``serve`` command.
+
+    ``fts_worker`` starts the background task that rebuilds the full-text index once
+    writes have been quiet for ``fts_debounce`` seconds (at most ``fts_max_wait`` behind),
+    and makes index searches serve the existing index instead of rebuilding it themselves.
+    ``slow_request`` (seconds; default 1, or ``SCOPUS_SLOW_REQUEST``) is the threshold for
+    logging a request as slow.
     """
     try:
         from fastapi import Body, FastAPI, HTTPException
@@ -74,6 +90,10 @@ def build_app(idle_timeout: float | None = None):
     # only kills the daemon when both are idle (no recent request AND no
     # live stream), so a long-lived /events/stream keeps us alive.
     activity = {"last": time.monotonic(), "streams": 0}
+    if slow_request is None:
+        slow_request = float(os.environ.get("SCOPUS_SLOW_REQUEST", "1.0"))
+    request_stats = scheduler.RequestStats(slow_after=slow_request)
+    limiter = scheduler.SlotLimiter(_THROTTLE)
 
     def _touch() -> None:
         activity["last"] = time.monotonic()
@@ -87,14 +107,22 @@ def build_app(idle_timeout: float | None = None):
         daemon startup outright. The task is also cancelled on shutdown here,
         which the on_event version never did.
         """
-        task = None
+        tasks = []
         if idle_timeout and idle_timeout > 0:
-            task = asyncio.create_task(_watch_idle())
+            tasks.append(asyncio.create_task(_watch_idle()))
+        if fts_worker:
+            adb.set_fts_background(True)
+            tasks.append(
+                asyncio.create_task(scheduler.fts_worker(fts_debounce, fts_max_wait, fts_poll))
+            )
         try:
             yield
         finally:
-            if task is not None:
+            if fts_worker:
+                adb.set_fts_background(False)
+            for task in tasks:
                 task.cancel()
+            for task in tasks:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
 
@@ -115,12 +143,30 @@ def build_app(idle_timeout: float | None = None):
     @app.middleware("http")
     async def _track_activity(request, call_next):
         _touch()
+        request_stats.begin()
+        started = time.monotonic()
+        status = 500
         try:
-            return await call_next(request)
+            response = await call_next(request)
+            status = response.status_code
+            return response
         finally:
             # Refresh on completion too, so requests that outlive the
             # idle window (e.g. a closing SSE stream) don't go stale.
             _touch()
+            seconds = time.monotonic() - started
+            path = request.url.path  # no query string: it can hold what the user searched for
+            slow = request_stats.end(request.method, path, status, seconds)
+            # A stream is open for as long as its client listens; that is not slowness.
+            if slow and not path.endswith("/stream"):
+                logger.warning(
+                    "slow request: %s %s -> %s in %.1fs (writers waiting: %d)",
+                    request.method,
+                    path,
+                    status,
+                    seconds,
+                    adb.writer_stats()["waiting"],
+                )
 
     @app.get("/health")
     def health():
@@ -218,6 +264,37 @@ def build_app(idle_timeout: float | None = None):
         return adb.remove_entries(body.get("eids", []))
 
     # ── Search ───────────────────────────────────────────────────────────────
+    @app.get("/admin/status")
+    def admin_status():
+        """How the daemon is doing: load, slow requests, the writer queue, index and rates."""
+        db_file = adb.DB_PATH
+        wal = db_file.with_name(db_file.name + ".wal")
+
+        def _size(path) -> int | None:
+            try:
+                return path.stat().st_size
+            except OSError:
+                return None
+
+        return {
+            "version": __version__,
+            "pid": os.getpid(),
+            "uptime_s": round(time.time() - request_stats.started),
+            "db": {"path": str(db_file), "size_bytes": _size(db_file), "wal_bytes": _size(wal)},
+            "requests": request_stats.snapshot(),
+            "writer": adb.writer_stats(),
+            "fts": adb.fts_status(),
+            "rate": limiter.snapshot(),
+        }
+
+    @app.post("/scheduler/slot")
+    def scheduler_slot(body: dict = Body(...)):
+        """When may the caller send to this API endpoint? Reserves the slot as it answers."""
+        endpoint = body.get("endpoint")
+        if not isinstance(endpoint, str) or not endpoint:
+            raise HTTPException(status_code=400, detail="endpoint must be a non-empty string")
+        return {"wait": limiter.reserve(endpoint)}
+
     @app.get("/search/fts")
     def search_fts(query: str, limit: int = 50):
         try:
@@ -413,6 +490,16 @@ def build_app(idle_timeout: float | None = None):
                 activity["streams"] -= 1
 
         return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.exception_handler(adb.WriteBusy)
+    async def write_busy_handler(request, exc):
+        # Not an error in the request: the single writer slot is taken. Say so quickly, with
+        # a retry hint, instead of letting the client time out with no explanation.
+        return JSONResponse(
+            status_code=503,
+            content=_err(exc, 503),
+            headers={"Retry-After": "2"},
+        )
 
     @app.exception_handler(ValueError)
     async def value_error_handler(request, exc):
