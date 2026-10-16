@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import threading
+import time
 import unicodedata
 from contextlib import contextmanager
 from datetime import datetime
@@ -267,6 +268,17 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             payload     JSON
         )
     """)
+    # ── Full-text index bookkeeping ──────────────────────────────────────────
+    # One row (or none): the newest event the FTS index was built from. The index
+    # is a static snapshot, so "stale" is simply "events newer than this".
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS fts_state (
+            built_event_id BIGINT,
+            built_at       TIMESTAMP,
+            rows           BIGINT,
+            duration_ms    DOUBLE
+        )
+    """)
     # ── Schema versioning gate ───────────────────────────────────────────────
     # Single-row meta table recording the on-disk schema version. No migration
     # framework — just a gate migrations branch on. A fresh DB is stamped with
@@ -448,27 +460,126 @@ def _ensure_fts(conn: duckdb.DuckDBPyConnection) -> bool:
     return _fts_available[path]
 
 
-def rebuild_fts() -> dict:
-    """Rebuild the FTS index over the articles table.
+# The index is a static snapshot — DuckDB's FTS cannot update it in place — so rebuilding it
+# after every write cost a full pass over the corpus per `abstract` call or search-all page,
+# queued behind the single writer lock. Instead the index is allowed to go stale: a write
+# only adds an event, `fts_status()` compares that against the event the index was built
+# from, and the rebuild happens once, later: in the daemon's background worker, or (with no
+# worker, as in the plain CLI) just before an index search.
+_fts_rebuild_lock = threading.Lock()  # one rebuild at a time; others wait, then find it fresh
+_fts_background = False  # True while a daemon worker owns rebuilding
+_fts_runtime: dict = {"rebuilding": False, "last_error": None}
+_TEXT_EVENT_KINDS = ("article.added", "article.updated", "article.note_set")
 
-    Idempotent. No-op if the FTS extension is unavailable or the
-    articles table has zero rows (the PRAGMA fails on an empty corpus).
-    """
+
+def set_fts_background(enabled: bool) -> None:
+    """Declare that a background worker rebuilds the index, so searches never do."""
+    global _fts_background
+    _fts_background = enabled
+
+
+def _latest_event_id(conn: duckdb.DuckDBPyConnection) -> int:
+    return conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
+
+
+def _fts_index_exists(conn: duckdb.DuckDBPyConnection) -> bool:
+    return (
+        conn.execute(
+            "SELECT COUNT(*) FROM duckdb_schemas() WHERE schema_name = 'fts_main_articles'"
+        ).fetchone()[0]
+        > 0
+    )
+
+
+def fts_status() -> dict:
+    """Whether the full-text index lags the data, and what the last rebuild cost."""
+    conn = _get_conn()
+    latest = _latest_event_id(conn)
+    row = conn.execute(
+        "SELECT built_event_id, CAST(built_at AS VARCHAR), rows, duration_ms FROM fts_state LIMIT 1"
+    ).fetchone()
+    built = row[0] if row else None
+    has_rows = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0] > 0
+    exists = _fts_index_exists(conn)
+    return {
+        "stale": has_rows and (built is None or built < latest or not exists),
+        "built_event_id": built,
+        "latest_event_id": latest,
+        "behind": None if built is None else max(0, latest - built),
+        "built_at": row[1] if row else None,
+        "rows": row[2] if row else None,
+        "last_rebuild_ms": row[3] if row else None,
+        "rebuilding": _fts_runtime["rebuilding"],
+        "last_error": _fts_runtime["last_error"],
+        "background_worker": _fts_background,
+    }
+
+
+def _rebuild_fts_locked() -> dict:
+    """Do the rebuild. Caller holds ``_fts_rebuild_lock``."""
     conn = _get_conn()
     if not _ensure_fts(conn):
         return {"rebuilt": False, "reason": "fts_unavailable"}
-    # Hold the process-wide write lock for the whole count+rebuild so a
-    # search-triggered rebuild can't race a concurrent add_entries and miss
-    # rows it just committed (the PRAGMA snapshots the table as it runs).
-    with _write_lock:
-        n = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-        if n == 0:
-            return {"rebuilt": False, "reason": "empty_corpus"}
-        conn.execute(
-            "PRAGMA create_fts_index('articles', 'eid', 'title', 'abstract', "
-            "'keywords', 'notes', overwrite=1)"
-        )
-    return {"rebuilt": True, "rows": n}
+    n = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+    if n == 0:
+        return {"rebuilt": False, "reason": "empty_corpus"}
+    pragma = (
+        "PRAGMA create_fts_index('articles', 'eid', 'title', 'abstract', "
+        "'keywords', 'notes', overwrite=1)"
+    )
+    _fts_runtime["rebuilding"] = True
+    started = time.monotonic()
+    try:
+        # Read the newest event *before* the PRAGMA takes its snapshot: whatever commits
+        # while it runs is then simply "not yet covered", and the next rebuild takes it.
+        # That is what lets writers keep going instead of waiting on a lock for the
+        # whole rebuild.
+        latest = _latest_event_id(conn)
+        try:
+            conn.execute(pragma)
+        except duckdb.TransactionException:
+            with _write_lock:  # a catalog conflict with a writer: do it alone, once
+                conn.execute(pragma)
+        elapsed_ms = (time.monotonic() - started) * 1000
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            conn.execute("DELETE FROM fts_state")
+            conn.execute(
+                "INSERT INTO fts_state VALUES (?, CURRENT_TIMESTAMP, ?, ?)",
+                [latest, n, elapsed_ms],
+            )
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+        _fts_runtime["last_error"] = None
+    except Exception as exc:
+        _fts_runtime["last_error"] = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        _fts_runtime["rebuilding"] = False
+    logger.info("FTS index rebuilt: %d rows in %.0f ms", n, elapsed_ms)
+    return {"rebuilt": True, "rows": n, "duration_ms": round(elapsed_ms)}
+
+
+def rebuild_fts() -> dict:
+    """Rebuild the FTS index now, whether or not it is stale. Idempotent.
+
+    No-op if the FTS extension is unavailable or the articles table is empty (the PRAGMA
+    fails on an empty corpus).
+    """
+    with _fts_rebuild_lock:
+        return _rebuild_fts_locked()
+
+
+def ensure_fts_fresh() -> dict:
+    """Rebuild the index only if it lags the data. Concurrent callers share one rebuild."""
+    if not fts_status()["stale"]:
+        return {"rebuilt": False, "reason": "fresh"}
+    with _fts_rebuild_lock:
+        if not fts_status()["stale"]:  # another caller got there while we waited
+            return {"rebuilt": False, "reason": "fresh"}
+        return _rebuild_fts_locked()
 
 
 def _strip_accents(s: str) -> str:
@@ -797,11 +908,9 @@ def add_entries(
 
     Deduplicates by EID. Updates existing entries with new data.
 
-    The FTS index is rebuilt at the end of the call. Pass
-    ``defer_fts_rebuild=True`` to skip the rebuild for this single call —
-    the caller is then responsible for invoking :func:`rebuild_fts` once
-    the bulk operation completes. The flag is single-call only and not a
-    persistent sentinel.
+    The FTS index is *not* rebuilt here: the call's events make it stale, and it is rebuilt
+    once, later (see :func:`fts_status`). ``defer_fts_rebuild`` is accepted for old callers
+    and does nothing.
     """
     conn = _get_conn()
     added = 0
@@ -949,11 +1058,6 @@ def add_entries(
                     )
 
     total = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-    if not defer_fts_rebuild and (added or updated):
-        try:
-            rebuild_fts()
-        except Exception as exc:
-            logger.warning("FTS index rebuild failed; search may be stale: %s", exc)
     return {"added": added, "updated": updated, "total": total}
 
 
@@ -1056,12 +1160,69 @@ def list_articles(
     }
 
 
+_STOPWORDS = frozenset(
+    ("a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of")
+    + ("on", "or", "that", "the", "to", "was", "were", "with")
+)
+
+
+def _query_terms(query: str) -> list[str]:
+    """The words of a query, lower-cased and accent-stripped, minus stopwords."""
+    words = re.findall(r"\w+", _strip_accents(query).lower())
+    return [w for w in words if w not in _STOPWORDS]
+
+
+def _fts_tail(conn: duckdb.DuckDBPyConnection, query: str) -> list[dict]:
+    """Articles written since the index was built that match the query, scored.
+
+    The index is a snapshot; this covers the rows it has not seen (and rows whose
+    text changed since) with a plain term match, so a stale index never hides
+    a paper that was just added. Score: 2 per term in the title, 1 per term in
+    abstract/keywords/notes: not BM25, but of the same order, so the merge reads sensibly.
+    """
+    terms = _query_terms(query)
+    row = conn.execute("SELECT built_event_id FROM fts_state LIMIT 1").fetchone()
+    if not terms or row is None or row[0] is None:
+        return []
+    kinds = ", ".join(f"'{k}'" for k in _TEXT_EVENT_KINDS)
+    eids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT entity_id FROM events "  # noqa: S608
+            f"WHERE id > ? AND entity_type = 'article' AND kind IN ({kinds})",
+            [row[0]],
+        ).fetchall()
+    ]
+    if not eids:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM articles WHERE list_contains(?, eid)", [eids]
+    ).fetchall()
+    columns = [desc[0] for desc in conn.description]
+    matches = []
+    for r in rows:
+        article = _row_to_dict(r, columns)
+        title = _strip_accents(str(article.get("title") or "")).lower()
+        rest = _strip_accents(
+            " ".join(str(article.get(k) or "") for k in ("abstract", "keywords", "notes"))
+        ).lower()
+        score = sum((2 if t in title else 0) + (1 if t in rest else 0) for t in terms)
+        if score:
+            article["_score"] = float(score)
+            matches.append(article)
+    return matches
+
+
 def search_articles_fts(query: str, limit: int = 50) -> dict:
     """BM25-ranked full-text search over (title, abstract, keywords, notes).
 
     Returns ``{"articles": [...], "total": n}`` where ``total`` is the
     number of matching rows (capped at ``limit``-equivalent semantics is
     not enforced; ``total`` reflects all hits with score > 0).
+
+    The index may lag the data. With a background worker (the daemon) it is served as
+    it is, plus a term match over whatever was written since, so a search never waits
+    for a rebuild; without one (the plain CLI) it is refreshed first, once.
 
     Raises RuntimeError if the FTS extension is unavailable; callers
     that want a fallback should branch on :func:`fts_available` and call
@@ -1072,11 +1233,14 @@ def search_articles_fts(query: str, limit: int = 50) -> dict:
         raise RuntimeError("DuckDB fts extension unavailable")
     if conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 0:
         return {"articles": [], "total": 0}
-    # Ensure index exists; cheap rebuild on empty/missing.
-    try:
-        rebuild_fts()
-    except Exception as exc:
-        logger.warning("FTS index rebuild failed; search may be stale: %s", exc)
+    if not _fts_background:
+        try:
+            ensure_fts_fresh()
+        except Exception as exc:
+            logger.warning("FTS index rebuild failed; search may be stale: %s", exc)
+    elif not _fts_index_exists(conn):
+        # The worker has not built the first index yet.
+        return search_articles_like(query, limit)
 
     sql = (
         "SELECT *, fts_main_articles.match_bm25(eid, ?) AS _score "
@@ -1084,13 +1248,33 @@ def search_articles_fts(query: str, limit: int = 50) -> dict:
         "WHERE fts_main_articles.match_bm25(eid, ?) IS NOT NULL "
         "ORDER BY _score DESC LIMIT ?"
     )
-    rows = conn.execute(sql, [query, query, limit]).fetchall()
-    columns = [desc[0] for desc in conn.description]
+    try:
+        rows = conn.execute(sql, [query, query, limit]).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        total = conn.execute(
+            "SELECT COUNT(*) FROM articles WHERE fts_main_articles.match_bm25(eid, ?) IS NOT NULL",
+            [query],
+        ).fetchone()[0]
+    except duckdb.CatalogException:
+        # The index was dropped under us (a rebuild between its DROP and CREATE, or one
+        # that never finished): answer from the plain match instead of failing.
+        return search_articles_like(query, limit)
     articles = [_row_to_dict(row, columns) for row in rows]
-    total = conn.execute(
-        "SELECT COUNT(*) FROM articles WHERE fts_main_articles.match_bm25(eid, ?) IS NOT NULL",
-        [query],
-    ).fetchone()[0]
+
+    tail = _fts_tail(conn, query)
+    if tail:
+        seen = {a["eid"] for a in articles}
+        indexed_hits = {
+            r[0]
+            for r in conn.execute(
+                "SELECT eid FROM articles WHERE list_contains(?, eid) "
+                "AND fts_main_articles.match_bm25(eid, ?) IS NOT NULL",
+                [[t["eid"] for t in tail], query],
+            ).fetchall()
+        }
+        fresh = [t for t in tail if t["eid"] not in seen]
+        total += sum(1 for t in tail if t["eid"] not in indexed_hits)
+        articles = sorted(articles + fresh, key=lambda a: -(a.get("_score") or 0))[:limit]
     return {"articles": articles, "total": total}
 
 
