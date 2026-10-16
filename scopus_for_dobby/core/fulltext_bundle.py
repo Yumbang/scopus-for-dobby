@@ -17,6 +17,7 @@ import requests
 
 from scopus_for_dobby.core.mathml_latex import mathml_to_latex
 from scopus_for_dobby.utils.api_client import QuotaExceeded, api_get_raw
+from scopus_for_dobby.utils.fsutil import atomic_write_bytes, atomic_write_text
 
 # Bump when the markdown renderer changes so cached bundles regenerate.
 BUNDLE_VERSION = 5
@@ -58,8 +59,7 @@ def _find(el: ET.Element, name: str) -> ET.Element | None:
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    path.chmod(0o600)
+    atomic_write_text(path, text, mode=0o600)
 
 
 def _slug(title: str, fallback: str = "section") -> str:
@@ -534,8 +534,7 @@ def _render_figures(
             image_rel = f"figures/{fid}.jpg"
             path = dest / image_rel
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(blob)
-            path.chmod(0o600)
+            atomic_write_bytes(path, blob, mode=0o600)
         cap_rel = f"figures/{fid}.caption.md"
         cap_lines = [f'# <a id="{fid}"></a>{label}', ""]
         if caption:

@@ -26,6 +26,7 @@ from scopus_for_dobby.utils.api_client import (
     QuotaExceeded,
     request_elsevier,
 )
+from scopus_for_dobby.utils.fsutil import atomic_write_text
 
 CACHE_DIRNAME = "fulltext"
 
@@ -134,8 +135,7 @@ def write_source(eid: str, xml: str) -> Path:
     dest.chmod(0o700)
     path = source_path(eid)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(xml, encoding="utf-8")
-    path.chmod(0o600)
+    atomic_write_text(path, xml, mode=0o600)
     return dest
 
 
@@ -179,8 +179,7 @@ def index_doi(doi: str | None, eid: str) -> None:
         return
     index[key] = eid
     path = _index_path()
-    path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    path.chmod(0o600)
+    atomic_write_text(path, json.dumps(index, indent=2, sort_keys=True) + "\n", mode=0o600)
 
 
 def _scan_manifests_for_doi(doi: str) -> str:

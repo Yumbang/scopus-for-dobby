@@ -13,6 +13,8 @@ from pathlib import Path
 
 import requests
 
+from scopus_for_dobby.utils.fsutil import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path.home() / ".scopus-for-dobby"
@@ -59,8 +61,7 @@ def load_config() -> dict:
 def save_config(config: dict):
     """Persist configuration to disk."""
     _ensure_config_dir()
-    CONFIG_FILE.write_text(json.dumps(config, indent=2))
-    CONFIG_FILE.chmod(0o600)
+    atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2), mode=0o600)
 
 
 def _quota_bucket(endpoint: str) -> str:
